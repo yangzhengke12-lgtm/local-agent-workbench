@@ -1,0 +1,11 @@
+[
+  {
+    "id": 1,
+    "description": "Elena：基于项目简报编写项目文档（README、API文档、组件说明）",
+    "priority": "high",
+    "status": "todo",
+    "assigned_worker": "Elena",
+    "created_at": "2026-05-26 00:11:56",
+    "completed_at": null
+  }
+]

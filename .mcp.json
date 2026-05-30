@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "arcgis-pro-bridge": {
+      "command": "C:\\Users\\YzK12\\AppData\\Local\\Programs\\Python\\Python312\\Scripts\\uv.exe",
+      "args": [
+        "run",
+        "arcgis_mcp_server.py"
+      ],
+      "cwd": "C:\\Users\\YzK12\\Desktop\\my-agent\\ArcGIS-Pro-Bridge-MCP-Server",
+      "env": {
+        "ARCGIS_PRO_INSTALL_DIR": "E:\\ARCGIS"
+      }
+    }
+  }
+}

@@ -1,0 +1,12 @@
+venv/
+.env
+__pycache__/
+*.pyc
+.claude/
+.codex/
+project_states/
+worker_sessions.json
+*.output
+.pytest_cache/
+_gen_docx.py
+ArcGIS-Pro-Bridge-MCP-Server

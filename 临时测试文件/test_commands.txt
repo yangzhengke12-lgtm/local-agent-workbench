@@ -1,0 +1,2 @@
+请用 read_file 读取 fund-vision/PROJECT_BRIEF.md，然后组织团队并行开发 FundVision：同时让 Alex 写代码、Sophia 审查、Nathaniel 准备测试、Elena 写文档。尽量并行委派。
+/quit

@@ -1,0 +1,118 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>AI Team</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,"Microsoft YaHei",sans-serif;background:#EDEDED;height:100vh;display:flex;justify-content:center;align-items:center}
+#app{width:100%;max-width:800px;height:100vh;display:flex;flex-direction:column;background:#fff;box-shadow:0 0 20px rgba(0,0,0,.1)}
+#hd{background:#2B5797;color:#fff;padding:12px 16px;display:flex;justify-content:space-between;align-items:center}
+#hd h1{font-size:16px}#hd span{font-size:12px;opacity:.8}
+#mb{background:#f0f4f8;padding:8px 16px;display:flex;gap:8px;overflow-x:auto;border-bottom:1px solid #e0e0e0;min-height:32px}
+.mt{display:flex;align-items:center;gap:4px;padding:4px 10px;border-radius:12px;font-size:12px;white-space:nowrap;cursor:pointer;border:1px solid transparent}
+.mt:hover{border-color:#aaa}
+#ms{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:8px;background:#f5f5f5}
+.msg{display:flex;gap:8px;max-width:90%;animation:in .3s}
+@keyframes in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+.me{flex-direction:row-reverse}
+.av{width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0;color:#fff;font-weight:bold}
+.bu{padding:10px 14px;border-radius:16px;font-size:14px;line-height:1.5;word-break:break-word}
+.msg:not(.me) .bu{background:#fff;border-top-left-radius:4px;box-shadow:0 1px 2px rgba(0,0,0,.05)}
+.me .bu{background:#95EC69;border-top-right-radius:4px}
+.sn{font-size:11px;color:#888}.tm{font-size:10px;color:#aaa}
+.tool .bu{background:#FFF3E0;border-left:3px solid #FF9800;font-size:12px}
+.res .bu{background:#E8F5E9;border-left:3px solid #4CAF50;font-size:12px}
+.done .bu{background:#E8F5E9;border:2px solid #4CAF50;font-weight:500}
+.sys .bu{background:#E3F2FD;text-align:center;font-size:12px;color:#666}
+#tp{padding:0 16px;font-size:11px;color:#888;min-height:20px}
+#ia{padding:12px 16px;border-top:1px solid #e0e0e0;display:flex;gap:8px;align-items:center;background:#fff}
+#ia select{padding:8px;border-radius:6px;border:1px solid #ddd;font-size:13px}
+#ia input{flex:1;padding:10px 14px;border-radius:20px;border:1px solid #ddd;font-size:14px;outline:none}
+#ia input:focus{border-color:#2B5797}
+#ia button{padding:10px 20px;border-radius:20px;border:none;color:#fff;font-size:14px;cursor:pointer}
+#sb{background:#2B5797}#up{background:#888;width:36px;height:36px;padding:0;font-size:20px}
+</style></head><body>
+<div id="app">
+<div id="hd"><h1>AI Team Chat</h1><span id="oc">connecting...</span></div>
+<div id="mb"></div><div id="ms"></div><div id="tp"></div>
+<div id="ia">
+<select id="ws"><option value="">all</option></select>
+<input id="mi" placeholder="type..." onkeydown="if(event.key==='Enter')send()">
+<button id="up" onclick="uploadFile()">+</button>
+<button id="sb" onclick="send()" disabled>send</button>
+</div></div>
+<script>
+var ws,mems=[],ra=0;
+var CL={Boss:'#F5A623',Manager:'#4A90D9','维克托':'#7B68EE','亚历克斯':'#27AE60','索菲亚':'#E74C3C','马库斯':'#E67E22','埃琳娜':'#E91E90','纳撒尼尔':'#00BCD4'};
+var AL={Boss:'B',Manager:'M','维克托':'D','亚历克斯':'A','索菲亚':'S','马库斯':'Mk','埃琳娜':'E','纳撒尼尔':'N'};
+
+function con(){
+ ws=new WebSocket('ws://'+location.host+'/ws');
+ ws.onopen=function(){ra=0;byId('oc').textContent='online';byId('sb').disabled=false;};
+ ws.onmessage=function(e){hm(JSON.parse(e.data));};
+ ws.onclose=function(){
+  ra++;var d=Math.min(1e3*Math.pow(2,ra),3e4);
+  byId('oc').textContent='reconnect '+d/1000+'s ('+ra+')';
+  setTimeout(con,d);
+ };
+}
+
+function hm(msg){
+ if(msg.type==='member_list'){
+  mems=msg.members;
+  var bar=byId('mb'),sel=byId('ws');
+  bar.innerHTML='';sel.innerHTML='<option value="">all</option>';
+  for(var i=0;i<mems.length;i++){
+   var m=mems[i];
+   var t=document.createElement('span');t.className='mt';
+   t.style.background=(CL[m.name]||'#999')+'18';t.style.color=CL[m.name]||'#999';
+   t.textContent=(AL[m.name]||'?')+' '+m.name;
+   (function(n){t.onclick=function(){byId('ws').value=n;byId('mi').focus();};})(m.name);
+   bar.appendChild(t);
+   if(m.name!=='Boss'){
+    var o=document.createElement('option');o.value=m.name;o.textContent='@'+m.name;sel.appendChild(o);
+   }
+  }
+  return;
+ }
+ if(msg.type==='typing'){byId('tp').innerHTML=msg.status?msg.worker+' typing...':'';return;}
+ if(msg.type==='system'){am('sys','Sys',msg.text);return;}
+ if(msg.type==='broadcast'){am('','All',msg.text,'#FFF9C4');return;}
+ if(msg.type==='worker_msg'){am('',msg.worker,msg.text);return;}
+ if(msg.type==='tool_call'){am('tool',msg.worker,msg.text);return;}
+ if(msg.type==='tool_result'){am('res',msg.worker,msg.text);return;}
+ if(msg.type==='task_done'){am('done',msg.worker,'DONE: '+(msg.text||'').slice(0,300));return;}
+ if(msg.type==='chat'){am('me','Boss',msg.text);return;}
+}
+
+function am(cls,sender,txt,bg){
+ var d=byId('ms'),n=new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'});
+ var c=CL[sender]||'#999',a=AL[sender]||'?';
+ var m=mems.find(function(x){return x.name===sender;}),rn=m?m.role:'';
+ var dv=document.createElement('div');dv.className='msg '+cls;
+ dv.innerHTML='<div class="av" style="background:'+c+'">'+a+'</div><div><span class="sn">'+sender+(rn?' | '+rn:'')+'</span><div class="bu"'+(bg?' style="background:'+bg+'"':'')+'>'+esc(txt)+'</div><span class="tm">'+n+'</span></div>';
+ d.appendChild(dv);d.scrollTop=d.scrollHeight;
+}
+
+function send(){
+ var inp=byId('mi'),w=byId('ws').value,t=inp.value.trim();
+ if(!t||!ws||ws.readyState!==WebSocket.OPEN) return;
+ if(w){ws.send(JSON.stringify({type:'task',worker:w,content:t}));am('me','Boss','@'+w+' '+t);}
+ else{ws.send(JSON.stringify({type:'chat',text:t}));am('me','Boss',t);}
+ inp.value='';
+}
+
+function uploadFile(){
+ var inp=document.createElement('input');inp.type='file';
+ inp.onchange=async function(){
+  var f=inp.files[0];if(!f)return;
+  var fd=new FormData();fd.append('file',f);
+  am('me','Boss','uploading: '+f.name);
+  var r=await fetch('/upload',{method:'POST',body:fd});
+  if(r.ok) am('sys','Sys','upload OK: '+f.name);
+  else am('sys','Sys','upload failed');
+ };
+ inp.click();
+}
+
+function byId(id){return document.getElementById(id);}
+function esc(s){return s?s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'):'';}
+con();
+</script></body></html>
