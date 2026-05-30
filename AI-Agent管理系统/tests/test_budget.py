@@ -11,41 +11,60 @@ class TestCheckBudget(unittest.TestCase):
     """Tests for _check_budget — verifies budget limit enforcement."""
 
     def test_budget_under_limit(self) -> None:
-        """attempts=2, max=3 → exceeded=False."""
+        """attempts=2, max=3 → allowed=True."""
         budget = Budget(max_attempts=3)
         stats = {"attempts": 2}
         result = _check_budget(stats, budget)
-        self.assertFalse(result["exceeded"])
-        self.assertEqual(result["reason"], "")
+        self.assertTrue(result["allowed"])
 
     def test_budget_exceeded_attempts(self) -> None:
-        """attempts=4, max=3 → exceeded=True, reason mentions 'attempts'."""
+        """attempts=4, max=3 → allowed=False, budget_type="max_attempts"."""
         budget = Budget(max_attempts=3)
         stats = {"attempts": 4}
         result = _check_budget(stats, budget)
-        self.assertTrue(result["exceeded"])
-        self.assertIn("attempts", result["reason"])
+        self.assertFalse(result["allowed"])
+        self.assertEqual(result["budget_type"], "max_attempts")
+        self.assertEqual(result["current"], 4)
+        self.assertEqual(result["limit"], 3)
 
     def test_budget_exceeded_model_calls(self) -> None:
-        """model_calls=21, max=20 → exceeded=True."""
+        """model_calls=21, max=20 → allowed=False, budget_type="max_model_calls"."""
         budget = Budget(max_model_calls=20)
         stats = {"model_calls": 21}
         result = _check_budget(stats, budget)
-        self.assertTrue(result["exceeded"])
+        self.assertFalse(result["allowed"])
+        self.assertEqual(result["budget_type"], "max_model_calls")
 
     def test_budget_exceeded_tool_calls(self) -> None:
-        """tool_calls=51, max=50 → exceeded=True."""
+        """tool_calls=51, max=50 → allowed=False, budget_type="max_tool_calls"."""
         budget = Budget(max_tool_calls=50)
         stats = {"tool_calls": 51}
         result = _check_budget(stats, budget)
-        self.assertTrue(result["exceeded"])
+        self.assertFalse(result["allowed"])
+        self.assertEqual(result["budget_type"], "max_tool_calls")
 
     def test_budget_exact_limit(self) -> None:
-        """attempts=3, max=3 → exceeded=False (not over, just at limit)."""
+        """attempts=3, max=3 → allowed=True (not exceeded, just at limit)."""
         budget = Budget(max_attempts=3)
         stats = {"attempts": 3}
         result = _check_budget(stats, budget)
-        self.assertFalse(result["exceeded"], "Exact limit should not be exceeded")
+        self.assertTrue(result["allowed"], "Exact limit should be allowed")
+
+    def test_budget_exceeded_rounds(self) -> None:
+        """rounds=6, max_rounds=5 → allowed=False, budget_type="max_rounds"."""
+        budget = Budget(max_rounds=5)
+        stats = {"rounds": 6}
+        result = _check_budget(stats, budget)
+        self.assertFalse(result["allowed"])
+        self.assertEqual(result["budget_type"], "max_rounds")
+
+    def test_budget_exceeded_runtime(self) -> None:
+        """runtime_seconds=601, max=600 → allowed=False, budget_type="max_runtime_seconds"."""
+        budget = Budget(max_runtime_seconds=600)
+        stats = {"runtime_seconds": 601}
+        result = _check_budget(stats, budget)
+        self.assertFalse(result["allowed"])
+        self.assertEqual(result["budget_type"], "max_runtime_seconds")
 
 
 class TestBudgetDefaults(unittest.TestCase):

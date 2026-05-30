@@ -153,7 +153,7 @@ class TestIntegration(unittest.TestCase):
         )
 
         self.assertEqual(result["final_status"], "failed")
-        self.assertIn("attempts 2 > max 1", result.get("reason", ""))
+        self.assertIn("max_attempts", result.get("reason", ""))
         # run_worker called on attempt 1 and attempt 2 (before budget check fails)
         self.assertEqual(mock_worker.call_count, 2)
         # verifier only called on attempt 1 (budget check fails on attempt 2 before

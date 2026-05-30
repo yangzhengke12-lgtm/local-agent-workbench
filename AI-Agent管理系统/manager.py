@@ -310,14 +310,34 @@ def _merge_verdicts(verdicts: list[VerificationResult]) -> VerificationResult:
 
 
 def _check_budget(stats: dict, budget: Budget) -> dict:
-    """检查预算是否超限。返回 {"exceeded": bool, "reason": str}。"""
-    if stats.get("attempts", 0) > budget.max_attempts:
-        return {"exceeded": True, "reason": f"attempts {stats['attempts']} > max {budget.max_attempts}"}
-    if stats.get("model_calls", 0) > budget.max_model_calls:
-        return {"exceeded": True, "reason": f"model_calls {stats['model_calls']} > max {budget.max_model_calls}"}
-    if stats.get("tool_calls", 0) > budget.max_tool_calls:
-        return {"exceeded": True, "reason": f"tool_calls {stats['tool_calls']} > max {budget.max_tool_calls}"}
-    return {"exceeded": False, "reason": ""}
+    """检查预算是否超限。返回标准化结构（v4.1）。
+
+    Returns:
+        {"allowed": bool, "reason": str, "budget_type": str, "current": int, "limit": int}
+    """
+    checks = [
+        ("max_attempts", stats.get("attempts", 0), budget.max_attempts),
+        ("max_model_calls", stats.get("model_calls", 0), budget.max_model_calls),
+        ("max_tool_calls", stats.get("tool_calls", 0), budget.max_tool_calls),
+        ("max_rounds", stats.get("rounds", 0), budget.max_rounds),
+        ("max_runtime_seconds", stats.get("runtime_seconds", 0), budget.max_runtime_seconds),
+    ]
+    for budget_type, current, limit in checks:
+        if current > limit:
+            return {
+                "allowed": False,
+                "reason": f"{budget_type}: {current} > {limit}",
+                "budget_type": budget_type,
+                "current": current,
+                "limit": limit,
+            }
+    return {
+        "allowed": True,
+        "reason": "",
+        "budget_type": "",
+        "current": 0,
+        "limit": 0,
+    }
 
 
 def _discover_artifacts(log: list) -> list[dict]:
@@ -338,6 +358,145 @@ def _discover_artifacts(log: list) -> list[dict]:
             except (json.JSONDecodeError, TypeError):
                 pass
     return artifacts
+
+
+# ═══════════════════════════════════════════════════════════════
+# v4.1 消息净化层 — 防止 thinking block 等多轮污染
+# ═══════════════════════════════════════════════════════════════
+
+# 会被 sanitize 移除的字段（非标准、厂商特有、或回传危险）
+_UNSAFE_MESSAGE_FIELDS = {
+    "thinking", "signature", "cache_control", "id",
+    "stop_reason", "stop_sequence", "usage", "model",
+    "tool_calls",    # OpenAI 格式的 tool_calls（不同于 Anthropic tool_use）
+}
+
+
+def sanitize_messages_for_provider(messages: list[dict], provider_key: str = "") -> list[dict]:
+    """移除所有厂商不安全字段，只保留 provider 中立的安全字段。
+
+    规则：
+    - 顶层保留：role, content
+    - content 为 str：保留
+    - content 为 list：只保留 type=="text" 的 block，每个 block 只保留 type 和 text
+    - 移除 thinking, tool_use, tool_result block（除非 provider 明确支持）
+    - 消息清理后 content 为空：丢弃该消息
+    - 不修改原始 messages，返回新 list
+
+    当前策略：保守清理，对所有 provider 一视同仁。
+    后续可按 provider 精细化（如 DeepSeek 保留 thinking、Anthropic 保留 tool_use）。
+    """
+    cleaned: list[dict] = []
+
+    for msg in messages:
+        # 1. 只保留安全顶层字段
+        safe_msg: dict = {}
+        if "role" in msg:
+            safe_msg["role"] = msg["role"]
+        else:
+            continue  # 没有 role 的消息直接丢弃
+
+        raw_content = msg.get("content")
+
+        # 2. 处理 content
+        if isinstance(raw_content, str):
+            safe_msg["content"] = raw_content
+        elif isinstance(raw_content, list):
+            kept_blocks: list[dict] = []
+            for block in raw_content:
+                if not isinstance(block, dict):
+                    continue
+                block_type = block.get("type", "")
+                if block_type == "text":
+                    # 只保留 type 和 text
+                    kept_blocks.append({
+                        "type": "text",
+                        "text": block.get("text", ""),
+                    })
+                # thinking / tool_use / tool_result block 全部丢弃
+            if kept_blocks:
+                safe_msg["content"] = kept_blocks
+            else:
+                continue  # content list 清空后丢弃整条消息
+        else:
+            continue  # 无 content 的消息丢弃
+
+        # 3. 移除所有不安全顶层字段
+        for field in _UNSAFE_MESSAGE_FIELDS:
+            safe_msg.pop(field, None)
+        # 移除其他未知字段
+        extra_keys = set(safe_msg.keys()) - {"role", "content"}
+        for key in extra_keys:
+            safe_msg.pop(key, None)
+
+        cleaned.append(safe_msg)
+
+    return cleaned
+
+
+# ═══════════════════════════════════════════════════════════════
+# v4.1 Session 生命周期策略
+# ═══════════════════════════════════════════════════════════════
+
+
+def should_use_fresh_session(task: str, mode: str = "") -> bool:
+    """判断是否应使用全新 session（不复用历史记忆）。
+
+    默认策略：
+    - delegate_with_verification: 始终 fresh（每次 attempt 独立）
+    - run_project_pipeline: 始终 fresh（每个 TaskNode 独立）
+    - run_convergence_loop: 保留 loop 内上下文但每轮 sanitize
+    - delegate_task / 聊天: 保留记忆（向后兼容）
+    """
+    if mode in ("verified", "pipeline", "fresh"):
+        return True
+    if mode == "convergence":
+        return False  # keep context within loop, sanitize per round
+    # 普通 delegate_task 保留记忆
+    return False
+
+
+# ═══════════════════════════════════════════════════════════════
+# v4.1 统一模型调用出口
+# ═══════════════════════════════════════════════════════════════
+
+
+def call_llm_once(prompt: str,
+                  system_prompt: str = "",
+                  tier: str = "normal",
+                  max_tokens: int = 4096,
+                  provider_key: str | None = None,
+                  model_id: str | None = None) -> str:
+    """统一 LLM 调用入口。禁止业务函数绕开此函数直接调底层 client。
+
+    - 自动解析 (provider, model) from tier
+    - 自动 sanitize messages
+    - 失败返回清晰错误文本，不抛裸异常
+    """
+    # 1. 解析 provider / model
+    if provider_key and model_id:
+        pk, mid = provider_key, model_id
+    else:
+        pk, mid = _resolve_route(tier)
+
+    # 2. 构建 messages
+    messages = [{"role": "user", "content": prompt}]
+    messages = sanitize_messages_for_provider(messages, pk)
+
+    # 3. 调用
+    try:
+        result = call_llm_multi_turn(
+            provider_key=pk,
+            model_id=mid,
+            messages=messages,
+            system_prompt=system_prompt,
+            max_tokens=max_tokens,
+        )
+        return result
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return f"[call_llm_once error] provider={pk} model={mid} tier={tier}: {e}"
 
 
 # ── Anthropic ↔ OpenAI 格式转换 ──────────────────────────────
@@ -534,7 +693,9 @@ def call_llm_multi_turn(provider_key: str, model_id: str, messages: list,
     final_text = ""
 
     for _turn in range(max_turns):
-        blocks = call_llm(provider_key, model_id, messages,
+        # v4.1: sanitize messages before every API call to prevent thinking block pollution
+        safe_messages = sanitize_messages_for_provider(messages, provider_key)
+        blocks = call_llm(provider_key, model_id, safe_messages,
                           system_prompt=system_prompt, tools=tools,
                           max_tokens=max_tokens)
 
@@ -961,23 +1122,18 @@ def project_setup(workers: dict, project_description: str) -> str:
         "- 确保审核链：Sophia(质量审核) → Nathaniel(数据验证) → Victor(最终复核)"
     )
 
-    client = workers.get(list(workers.keys())[0], {}).get("client", default_client)
-
-    messages = [{"role": "user", "content": f"[新项目]\n{project_description}"}]
     final_result = ""
+    retry_context = ""
 
-    for _turn in range(3):
-        response = client.messages.create(
-            model=MANAGER_COMPLEX_MODEL[1],  # extract model string from (provider, model) tuple
+    for attempt in range(3):
+        # v4.1: unified call through call_llm_once — no direct client access
+        prompt = f"[新项目]\n{project_description}{retry_context}"
+        final_result = call_llm_once(
+            prompt=prompt,
+            system_prompt=system_prompt,
+            tier="complex",
             max_tokens=4096,
-            system=system_prompt,
-            messages=messages,
         )
-
-        for block in response.content:
-            if block.type == "text":
-                final_result = block.text
-                messages.append({"role": "assistant", "content": [{"type": "text", "text": block.text}]})
 
         # 尝试解析 JSON
         try:
@@ -1024,7 +1180,7 @@ def project_setup(workers: dict, project_description: str) -> str:
 
         except (json.JSONDecodeError, KeyError) as e:
             # JSON 解析失败，让 AI 再试一次
-            messages.append({"role": "user", "content": f"JSON 格式不正确 ({e})。请严格按 JSON 格式重新输出。"})
+            retry_context = f"\n\n[上一轮 JSON 格式不正确: {e}] 请严格按 JSON 格式重新输出。"
             continue
 
     return f"项目规划失败：AI 未能输出有效 JSON。原始回复:\n{final_result[:500]}"
@@ -1554,11 +1710,16 @@ def load_workers(config_path: str = "workers.json") -> dict:
 
 # ── Worker 执行循环 ────────────────────────────────────────
 def run_worker(worker_cfg: dict, task: str, use_memory: bool = True,
-               project_name: str = "") -> dict:
+               project_name: str = "",
+               fresh_session: bool = False,
+               session_scope: str = "") -> dict:
     """启动一个 Worker，使用其专属工具和配置执行任务。支持多轮对话记忆。
 
     v3 升级：多厂商模型自适应 —— Worker 自主判断任务复杂度，
-    选择最佳厂商和模型（DeepSeek/千问/MiniMax/GPT）。"""
+    选择最佳厂商和模型（DeepSeek/千问/MiniMax/GPT）。
+
+    v4.1 升级：fresh_session=True 时不读取历史记忆，
+    session_scope 可将本次会话写入隔离的 session key。"""
     name = worker_cfg["name"]
     role = worker_cfg["role"]
     tools = worker_cfg["tools"]
@@ -1601,12 +1762,21 @@ def run_worker(worker_cfg: dict, task: str, use_memory: bool = True,
     )
 
     # 多轮记忆：复用之前的对话历史
-    session_key = f"{name}|{role}"
-    if use_memory and session_key in worker_sessions:
+    base_key = f"{name}|{role}"
+    if session_scope:
+        session_key = f"{base_key}|{session_scope}"
+    else:
+        session_key = base_key
+
+    if use_memory and not fresh_session and session_key in worker_sessions:
         messages = worker_sessions[session_key]
         messages.append({"role": "user", "content": f"[新任务] {task}"})
+        # v4.1: sanitize loaded session to strip stale thinking blocks
+        messages = sanitize_messages_for_provider(messages, worker_provider_key)
         log_print("(记得之前的对话上下文)")
     else:
+        if fresh_session:
+            log_print("(全新会话)")
         messages = [{"role": "user", "content": task}]
 
     # 工具回调：权限检查 + 日志
@@ -1718,10 +1888,12 @@ def run_deputy(task: str, manager_tools: list) -> dict:
 
     for turn in range(5):
         track_api_call(name)
+        # v4.1: sanitize before deputy API call
+        safe_messages = sanitize_messages_for_provider(messages)
         response = client.messages.create(
             model=model, max_tokens=4096,
             system=system_prompt, tools=manager_tools,
-            messages=messages,
+            messages=safe_messages,
         )
 
         assistant_content = []
@@ -1817,7 +1989,7 @@ def _run_verifier(verifier_cfg: dict, worker_result: WorkerResult,
         '"description": "...", "suggestion": "..."}], '
         '"retry_instruction": "如果不通过，给 Worker 的具体改进指令"}'
     )
-    raw = run_worker(verifier_cfg, prompt, use_memory=False)
+    raw = run_worker(verifier_cfg, prompt, use_memory=False, fresh_session=True)
     return _normalize_verification_result(raw["result"])
 
 
@@ -1846,7 +2018,10 @@ def delegate_with_verification(workers: dict, worker_name: str, task: str,
 
     for attempt in range(1, max_retries + 2):  # initial + retries
         # 1. 执行 Worker
-        raw = run_worker(workers[worker_name], current_task, project_name=project_name)
+        raw = run_worker(workers[worker_name], current_task,
+                         project_name=project_name,
+                         fresh_session=True,
+                         session_scope=f"verified_{attempt}")
         worker_result = _normalize_worker_result(raw["result"])
 
         # 2. 预算检查
@@ -1854,7 +2029,7 @@ def delegate_with_verification(workers: dict, worker_name: str, task: str,
             {"attempts": attempt, "model_calls": attempt * 3},  # rough estimate
             budget,
         )
-        if budget_status["exceeded"]:
+        if not budget_status["allowed"]:
             worker_result.status = "failed"
             return {
                 "worker_result": asdict(worker_result),
@@ -2106,27 +2281,135 @@ def _build_node_task(ndata: dict, state: dict) -> str:
 
 
 def _summarize_run(nodes: dict[str, dict], status: str = "") -> dict:
-    """生成可审计的 pipeline 执行摘要。"""
+    """生成可审计的 pipeline 执行摘要（v4.1 增强版）。
+
+    每个节点包含：status, worker, attempts, verifier verdict,
+    score, blocked_by, artifacts, error.
+    """
     node_summaries = {}
-    done = failed = blocked = todo = needs_replan = 0
+    counts = {
+        "todo": 0, "ready": 0, "running": 0, "verifying": 0,
+        "done": 0, "retrying": 0, "failed": 0, "blocked": 0,
+        "needs_replan": 0,
+    }
+
     for nid, ndata in nodes.items():
         s = ndata.get("status", "todo") if isinstance(ndata, dict) else getattr(ndata, "status", "todo")
-        if s == "done": done += 1
-        elif s == "failed": failed += 1
-        elif s == "blocked": blocked += 1
-        elif s == "todo": todo += 1
-        elif s == "needs_replan": needs_replan += 1
+        if s in counts:
+            counts[s] += 1
+
+        # blocked_by: find upstream nodes that are blocking this one
+        deps = ndata.get("depends_on", []) if isinstance(ndata, dict) else getattr(ndata, "depends_on", [])
+        blocked_by = []
+        for dep in deps:
+            if dep in nodes:
+                dep_s = nodes[dep].get("status", "todo") if isinstance(nodes[dep], dict) else getattr(nodes[dep], "status", "todo")
+                if dep_s in ("failed", "blocked", "needs_replan"):
+                    blocked_by.append(dep)
+
+        # verification info
+        verification = ndata.get("verification") if isinstance(ndata, dict) else getattr(ndata, "verification", None)
+        verifier_verdict = verification.get("verdict", "") if isinstance(verification, dict) else ""
+        verifier_score = verification.get("score", 0) if isinstance(verification, dict) else 0
+
         node_summaries[nid] = {
             "name": ndata.get("name", nid) if isinstance(ndata, dict) else getattr(ndata, "name", nid),
             "status": s,
-            "assigned_worker": ndata.get("assigned_worker", "") if isinstance(ndata, dict) else getattr(ndata, "assigned_worker", ""),
+            "worker": ndata.get("assigned_worker", "") if isinstance(ndata, dict) else getattr(ndata, "assigned_worker", ""),
             "attempts": ndata.get("attempts", 0) if isinstance(ndata, dict) else getattr(ndata, "attempts", 0),
+            "verifier_verdict": verifier_verdict,
+            "score": verifier_score,
+            "blocked_by": blocked_by,
+            "artifacts": ndata.get("artifacts", []) if isinstance(ndata, dict) else getattr(ndata, "artifacts", []),
+            "error": ndata.get("error", "") if isinstance(ndata, dict) else getattr(ndata, "error", ""),
         }
+
+    # 确定 overall status
+    if status:
+        overall = status
+    elif counts["failed"] > 0 or counts["blocked"] > 0 or counts["needs_replan"] > 0:
+        overall = "failed" if counts["failed"] > 0 else "incomplete"
+    elif counts["done"] == len(nodes):
+        overall = "completed"
+    elif counts["running"] > 0 or counts["todo"] > 0:
+        overall = "in_progress"
+    else:
+        overall = "unknown"
+
+    # 下一步建议
+    next_actions: list[str] = []
+    if counts["needs_replan"] > 0:
+        next_actions.append(f"{counts['needs_replan']} node(s) need replan — run request_replan")
+    if counts["failed"] > 0:
+        next_actions.append(f"{counts['failed']} node(s) failed — check error details and retry or replan")
+    if counts["blocked"] > 0:
+        next_actions.append(f"{counts['blocked']} node(s) blocked — resolve upstream failures first")
+    if overall == "completed":
+        next_actions.append("All nodes completed successfully. Run is done.")
+    elif overall == "in_progress":
+        next_actions.append("Run is still in progress. Use --resume to continue.")
+
     return {
-        "overall_status": status,
-        "counts": {"done": done, "failed": failed, "blocked": blocked, "todo": todo, "needs_replan": needs_replan},
+        "overall_status": overall,
+        "counts": counts,
         "nodes": node_summaries,
+        "next_actions": next_actions,
     }
+
+
+def build_workflow_run_report(workflow_run: dict | WorkflowRun) -> str:
+    """生成标准化的 WorkflowRun 人类可读报告（v4.1）。
+
+    Accepts both raw dict and WorkflowRun dataclass.
+    """
+    nodes = workflow_run.nodes if isinstance(workflow_run, WorkflowRun) else workflow_run.get("nodes", {})
+    status = workflow_run.status if isinstance(workflow_run, WorkflowRun) else workflow_run.get("status", "")
+    run_id = workflow_run.run_id if isinstance(workflow_run, WorkflowRun) else workflow_run.get("run_id", "")
+    project = workflow_run.project_name if isinstance(workflow_run, WorkflowRun) else workflow_run.get("project_name", "")
+    created = workflow_run.created_at if isinstance(workflow_run, WorkflowRun) else workflow_run.get("created_at", "")
+    updated = workflow_run.updated_at if isinstance(workflow_run, WorkflowRun) else workflow_run.get("updated_at", "")
+
+    summary = _summarize_run(nodes, status)
+
+    lines = [
+        "=" * 65,
+        f"  Workflow Run Report",
+        "=" * 65,
+        f"  Run ID:      {run_id}",
+        f"  Project:     {project}",
+        f"  Status:      {status}",
+        f"  Started:     {created}",
+        f"  Updated:     {updated}",
+        f"  Total Nodes: {len(nodes)}",
+        "  ── Counts ──",
+    ]
+    for state, count in summary["counts"].items():
+        if count > 0:
+            lines.append(f"    {state}: {count}")
+
+    lines.append("  ── Nodes ──")
+    for nid, ndata in summary["nodes"].items():
+        marker = {"done": "✅", "failed": "❌", "blocked": "🚫", "todo": "⏳",
+                  "running": "🔄", "retrying": "🔁", "needs_replan": "🔧"}.get(ndata["status"], "❓")
+        lines.append(
+            f"    {marker} {nid}: {ndata['status']} "
+            f"(worker={ndata['worker']}, attempts={ndata['attempts']}, "
+            f"verdict={ndata['verifier_verdict'] or 'N/A'}, score={ndata['score']})"
+        )
+        if ndata.get("blocked_by"):
+            lines.append(f"       blocked_by: {ndata['blocked_by']}")
+        if ndata.get("error"):
+            error_text = str(ndata["error"])[:120]
+            lines.append(f"       error: {error_text}")
+        if ndata.get("artifacts"):
+            lines.append(f"       artifacts: {len(ndata['artifacts'])} file(s)")
+
+    lines.append("  ── Next Actions ──")
+    for action in summary.get("next_actions", []):
+        lines.append(f"    → {action}")
+    lines.append("=" * 65)
+
+    return "\n".join(lines)
 
 
 def run_project_pipeline(project_name: str, workers: dict,
@@ -2259,6 +2542,8 @@ def run_project_pipeline(project_name: str, workers: dict,
     _propagate_blocks(run.nodes)
     _save_workflow_run(run)
 
+    report = build_workflow_run_report(run)
+    print(report)
     return _summarize_run(run.nodes, run.status)
 
 
