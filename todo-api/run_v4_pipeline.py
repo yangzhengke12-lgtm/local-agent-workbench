@@ -30,10 +30,31 @@ sys.path.insert(0, MANAGER_DIR)
 from manager import (
     load_workers, project_setup, run_project_pipeline,
     load_workflow_run, resume_workflow_run, save_workflow_run,
-    _summarize_run,
+    _summarize_run, PROJECT_STATE_DIR,
 )
 
 PROJECT_NAME = "FastAPI Todo API Project"
+
+
+def _find_project_name() -> str | None:
+    """从 project_states/ 中找到最新的 Todo API 项目名。"""
+    import glob as _glob
+    if not os.path.isdir(PROJECT_STATE_DIR):
+        return None
+    candidates = [
+        f for f in _glob.glob(os.path.join(PROJECT_STATE_DIR, "*_state.json"))
+        if "FastAPI" in os.path.basename(f) or "Todo" in os.path.basename(f)
+    ]
+    if not candidates:
+        # fallback: 取最新的 state 文件
+        candidates = _glob.glob(os.path.join(PROJECT_STATE_DIR, "*_state.json"))
+    if not candidates:
+        return None
+    # 按修改时间排序，取最新
+    candidates.sort(key=os.path.getmtime, reverse=True)
+    filename = os.path.basename(candidates[0])
+    # 去掉 _state.json 后缀
+    return filename.rsplit("_state.json", 1)[0]
 
 
 def cmd_setup():
@@ -48,21 +69,25 @@ def cmd_setup():
         return
 
     description = (
-        "创建一个 FastAPI Todo API 项目，目录为 C:\\Users\\YzK12\\Desktop\\my-agent\\todo-api。\n\n"
-        "项目已包含以下文件（不要覆盖，只能修改）：\n"
-        "- main.py: FastAPI 应用，包含 CRUD 但 completed 字段更新逻辑有 bug（被注释掉了）\n"
-        "- test_main.py: pytest 测试，12 个测试用例，其中 test_update_completed 会失败\n"
-        "- requirements.txt: 依赖包\n\n"
-        "Pipeline 步骤：\n"
-        "1. 【设计审查】阅读 main.py 和 test_main.py，确认项目结构\n"
-        "2. 【修复实现】取消 main.py 中 completed 字段更新的注释（第 ~63-65 行），使 test_update_completed 通过\n"
-        "3. 【运行测试】在 todo-api 目录下运行 pytest，确认 12/12 全部通过\n"
-        "4. 【编写文档】创建 README.md，说明启动方式、API 端点、测试方法\n"
-        "5. 【代码审查】Sophia 审查最终代码质量"
+        "项目名称：FastAPI Todo API\n\n"
+        "目录：C:\\Users\\YzK12\\Desktop\\my-agent\\todo-api\n\n"
+        "main.py 是一个 FastAPI Todo CRUD 应用。第73-74行的 completed 字段更新代码被注释了：\n"
+        "  # if body.completed is not None:\n"
+        "  #     todo[\"completed\"] = body.completed\n"
+        "需要取消这两行的注释（去掉 # 和缩进空格），使 PUT /todos/{id} 能正确更新 completed 字段。\n"
+        "test_main.py 有 12 个测试，其中 test_update_completed 因上述 bug 会失败。\n"
+        "其他文件（requirements.txt 等）已就绪。\n\n"
+        "Pipeline 步骤（仅2步，极简）：\n"
+        "1. 【修复实现】只做一件事：用 write_file 保存 main.py，唯一改动是取消第73-74行的注释。不要修改其他任何代码！不要重写文件！只改这两行！\n"
+        "2. 【运行测试】在 C:\\Users\\YzK12\\Desktop\\my-agent\\todo-api 执行 python -m pytest test_main.py -v，验证 12 passed。"
     )
 
     result = project_setup(workers, description)
     print(result)
+    # 输出实际项目名供后续步骤使用
+    actual_name = _find_project_name()
+    if actual_name:
+        print(f"\n[Driver] 检测到项目名: {actual_name}")
 
 
 def cmd_run():
@@ -72,11 +97,16 @@ def cmd_run():
         print("[FAIL] 无法加载 workers.json")
         return
 
+    project_name = _find_project_name()
+    if not project_name:
+        print("[FAIL] 未找到项目状态文件。请先运行 --setup。")
+        return
+
     print("=" * 60)
-    print("  Todo API — v4 Pipeline Execution")
+    print(f"  Todo API — v4 Pipeline Execution: {project_name}")
     print("=" * 60)
 
-    result = run_project_pipeline(PROJECT_NAME, workers)
+    result = run_project_pipeline(project_name, workers)
     print("\n" + "=" * 60)
     print("  Pipeline 执行结果")
     print("=" * 60)
@@ -85,7 +115,11 @@ def cmd_run():
 
 def cmd_status():
     """查看工作流状态。"""
-    run = load_workflow_run(PROJECT_NAME)
+    project_name = _find_project_name()
+    if not project_name:
+        print("未找到项目状态文件。请先运行 --setup。")
+        return
+    run = load_workflow_run(project_name)
     if run is None:
         print(f"未找到项目 '{PROJECT_NAME}' 的工作流记录。请先运行 --setup 然后 --run。")
         return
@@ -110,11 +144,16 @@ def cmd_resume():
         print("[FAIL] 无法加载 workers.json")
         return
 
+    project_name = _find_project_name()
+    if not project_name:
+        print("[FAIL] 未找到项目状态文件。请先运行 --setup。")
+        return
+
     print("=" * 60)
-    print("  Todo API — v4 Pipeline Resume")
+    print(f"  Todo API — v4 Pipeline Resume: {project_name}")
     print("=" * 60)
 
-    result = resume_workflow_run(PROJECT_NAME, workers)
+    result = resume_workflow_run(project_name, workers)
     print("\n" + "=" * 60)
     print("  Resume 结果")
     print("=" * 60)

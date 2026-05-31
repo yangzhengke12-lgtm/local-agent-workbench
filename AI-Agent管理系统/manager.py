@@ -12,11 +12,24 @@ import json
 import os
 import shlex
 import subprocess
+import sys
+import io
 import threading
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, asdict
+
+# Windows UTF-8 控制台修复（Pitfall #4: GBK 编码无法输出 emoji）
+# 仅在真实终端下启用，跳过 pytest/重定向等场景
+if sys.platform == "win32" and "pytest" not in sys.modules:
+    try:
+        if hasattr(sys.stdout, "buffer") and sys.stdout.encoding != "utf-8":
+            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+        if hasattr(sys.stderr, "buffer") and sys.stderr.encoding != "utf-8":
+            sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+    except (AttributeError, OSError, ValueError):
+        pass
 from datetime import datetime
 from enum import Enum
 
@@ -341,13 +354,19 @@ def _check_budget(stats: dict, budget: Budget) -> dict:
 
 
 def _discover_artifacts(log: list) -> list[dict]:
-    """从 Worker 执行日志中提取文件产物。"""
+    """从 Worker 执行日志中提取文件产物。兼容字符串和字典两种 log 格式。"""
     artifacts: list[dict] = []
     for entry in log:
+        if isinstance(entry, str):
+            continue  # skip plain text log entries
+        if not isinstance(entry, dict):
+            continue
         tool_name = entry.get("tool", "")
         if tool_name in ("write_file", "save_template"):
             try:
-                args = json.loads(entry.get("args", "{}")) if isinstance(entry.get("args"), str) else entry.get("args", {})
+                args = entry.get("args", {})
+                if isinstance(args, str):
+                    args = json.loads(args)
                 path = args.get("path", args.get("file_path", ""))
                 if path:
                     artifacts.append({
@@ -373,19 +392,18 @@ _UNSAFE_MESSAGE_FIELDS = {
 
 
 def sanitize_messages_for_provider(messages: list[dict], provider_key: str = "") -> list[dict]:
-    """移除所有厂商不安全字段，只保留 provider 中立的安全字段。
+    """移除厂商不安全字段，返回安全的 messages 副本。
 
     规则：
     - 顶层保留：role, content
     - content 为 str：保留
-    - content 为 list：只保留 type=="text" 的 block，每个 block 只保留 type 和 text
-    - 移除 thinking, tool_use, tool_result block（除非 provider 明确支持）
+    - content 为 list：保留 text block（所有 provider）+ thinking block（仅 DeepSeek）
+    - 移除 tool_use, tool_result block（这些不应在历史中裸奔）
     - 消息清理后 content 为空：丢弃该消息
     - 不修改原始 messages，返回新 list
-
-    当前策略：保守清理，对所有 provider 一视同仁。
-    后续可按 provider 精细化（如 DeepSeek 保留 thinking、Anthropic 保留 tool_use）。
     """
+    # DeepSeek 原生支持 thinking block，保留它避免 assistant 消息被清空
+    keep_thinking = provider_key == "deepseek"
     cleaned: list[dict] = []
 
     for msg in messages:
@@ -408,12 +426,18 @@ def sanitize_messages_for_provider(messages: list[dict], provider_key: str = "")
                     continue
                 block_type = block.get("type", "")
                 if block_type == "text":
-                    # 只保留 type 和 text
                     kept_blocks.append({
                         "type": "text",
                         "text": block.get("text", ""),
                     })
-                # thinking / tool_use / tool_result block 全部丢弃
+                elif block_type == "thinking" and keep_thinking:
+                    # v4.2: 保留 DeepSeek thinking block，避免 assistant 消息被清空
+                    kept_blocks.append({
+                        "type": "thinking",
+                        "thinking": block.get("thinking", ""),
+                        "signature": block.get("signature", ""),
+                    })
+                # tool_use / tool_result block 始终丢弃
             if kept_blocks:
                 safe_msg["content"] = kept_blocks
             else:
@@ -466,7 +490,8 @@ def call_llm_once(prompt: str,
                   tier: str = "normal",
                   max_tokens: int = 4096,
                   provider_key: str | None = None,
-                  model_id: str | None = None) -> str:
+                  model_id: str | None = None,
+                  disable_thinking: bool = False) -> str:
     """统一 LLM 调用入口。禁止业务函数绕开此函数直接调底层 client。
 
     - 自动解析 (provider, model) from tier
@@ -491,6 +516,7 @@ def call_llm_once(prompt: str,
             messages=messages,
             system_prompt=system_prompt,
             max_tokens=max_tokens,
+            disable_thinking=disable_thinking,
         )
         return result
     except Exception as e:
@@ -615,7 +641,7 @@ def openai_response_to_anthropic_blocks(response) -> list:
 
 def call_llm(provider_key: str, model_id: str, messages: list,
              system_prompt: str = "", tools: list = None,
-             max_tokens: int = 4096) -> list:
+             max_tokens: int = 4096, disable_thinking: bool = False) -> list:
     """统一的 LLM 调用接口：根据 provider 自动选择 Anthropic 或 OpenAI 格式。
 
     Args:
@@ -625,6 +651,7 @@ def call_llm(provider_key: str, model_id: str, messages: list,
         system_prompt: system prompt 文本
         tools: Anthropic 格式的工具定义列表
         max_tokens: 最大输出 token
+        disable_thinking: DeepSeek 系禁用 thinking mode，避免 thinking block 多轮污染
 
     Returns:
         Anthropic 风格的 content blocks 列表
@@ -635,12 +662,17 @@ def call_llm(provider_key: str, model_id: str, messages: list,
 
     if provider["type"] == "anthropic":
         # DeepSeek 走 Anthropic 兼容接口
+        extra_params: dict = {}
+        if disable_thinking:
+            extra_params["thinking"] = {"type": "disabled"}
+
         response = provider["client"].messages.create(
             model=model_id,
             max_tokens=max_tokens,
             system=system_prompt,
             tools=tools or [],
             messages=messages,
+            **extra_params,
         )
         # 直接返回 Anthropic content blocks
         blocks = []
@@ -673,7 +705,8 @@ def call_llm(provider_key: str, model_id: str, messages: list,
 def call_llm_multi_turn(provider_key: str, model_id: str, messages: list,
                          system_prompt: str = "", tools: list = None,
                          max_turns: int = 10, max_tokens: int = 4096,
-                         log_callback=None, execute_tool_fn=None) -> str:
+                         log_callback=None, execute_tool_fn=None,
+                         disable_thinking: bool = False) -> str:
     """多轮 LLM 调用：自动处理工具调用循环，返回最终文本结果。
 
     Args:
@@ -685,19 +718,58 @@ def call_llm_multi_turn(provider_key: str, model_id: str, messages: list,
         max_tokens: 单次最大输出
         log_callback: function(name, args, result) 工具调用回调
         execute_tool_fn: 自定义工具执行 function(name, args) → str，默认用全局 execute_tool
+        disable_thinking: DeepSeek 系禁用 thinking mode
 
     Returns:
         最终的文本回复
     """
     tool_executor = execute_tool_fn or execute_tool
     final_text = ""
+    last_tool_sig = ""    # track consecutive identical tool calls
+    repeat_count = 0
+    total_reads = 0       # track total read_file calls this turn
+    total_writes = 0      # track total write_file calls this turn
 
     for _turn in range(max_turns):
+        force_stop = False
+        # v4.2: detect repetitive tool calls (model stuck in read loop)
+        if repeat_count >= 3:
+            messages.append({
+                "role": "user",
+                "content": (
+                    "你已经连续多次执行相同的操作。请立即停止，"
+                    "基于已有的信息给出你的结论。不要再调用任何工具。"
+                ),
+            })
+            repeat_count = 0
+            force_stop = True
+        elif total_reads >= 3:
+            messages.append({
+                "role": "user",
+                "content": (
+                    "你已经读取了足够多的文件内容。请立即给出你的分析和结论，"
+                    "不要再调用 read_file。直接输出文本回复。"
+                ),
+            })
+            total_reads = 0
+            force_stop = True
+        elif total_writes >= 2:
+            messages.append({
+                "role": "user",
+                "content": (
+                    "你已经写入了足够多次文件。请立即给出你的最终总结，"
+                    "不要再调用 write_file。直接输出文本回复。"
+                ),
+            })
+            total_writes = 0
+            force_stop = True
+
         # v4.1: sanitize messages before every API call to prevent thinking block pollution
         safe_messages = sanitize_messages_for_provider(messages, provider_key)
         blocks = call_llm(provider_key, model_id, safe_messages,
                           system_prompt=system_prompt, tools=tools,
-                          max_tokens=max_tokens)
+                          max_tokens=max_tokens,
+                          disable_thinking=disable_thinking)
 
         assistant_content = []
         has_tool_use = False
@@ -709,10 +781,25 @@ def call_llm_multi_turn(provider_key: str, model_id: str, messages: list,
             elif block["type"] == "thinking":
                 assistant_content.append(block)
             elif block["type"] == "tool_use":
+                if force_stop:
+                    # v4.2: 模型仍在读文件，强制终止本轮
+                    continue
                 has_tool_use = True
                 tool_name = block["name"]
                 tool_args = block["input"]
                 tool_id = block["id"]
+
+                # v4.2: track repetitive identical tool calls
+                tool_sig = f"{tool_name}:{json.dumps(tool_args, sort_keys=True, ensure_ascii=False)}"
+                if tool_sig == last_tool_sig:
+                    repeat_count += 1
+                else:
+                    last_tool_sig = tool_sig
+                    repeat_count = 1
+                if tool_name in ("read_file", "find_files", "search_code", "fetch_url"):
+                    total_reads += 1
+                if tool_name in ("write_file", "save_template"):
+                    total_writes += 1
 
                 if log_callback:
                     log_callback(tool_name, tool_args, "")
@@ -1756,8 +1843,10 @@ def run_worker(worker_cfg: dict, task: str, use_memory: bool = True,
         "请在自己的能力范围内尽力完成任务。如果任务超出你的能力范围，"
         "请如实说明，不要强行操作。完成后请清晰汇报。\n"
         "重要行为守则：\n"
+        "- 【关键】每个文件最多读取一次。读取后立即进行分析，不要重复读取同一文件。\n"
+        "- 【关键】读完所有必要文件后，立即给出结论和输出，不要再调用工具。\n"
+        "- 完成后必须用 JSON 格式总结：{\"status\": \"success|partial|failed\", \"summary\": \"...\", \"artifacts\": [...]}\n"
         "- 如果发现了值得团队记住的经验教训或 bug 模式，用 save_template 或 search_knowledge 记录下来\n"
-        "- 如果你有能力完成但未被分配的看板任务，主动在汇报中向 Manager 自荐\n"
         "- 遇到问题优先用 ask_coworker 找合适的同事求助，不要独自硬撑"
     )
 
@@ -1806,9 +1895,10 @@ def run_worker(worker_cfg: dict, task: str, use_memory: bool = True,
         messages=messages,
         system_prompt=system_prompt,
         tools=tools,
-        max_turns=10,
+        max_turns=6,  # v4.2: 6 turns with read-detection at turn 3+
         log_callback=tool_callback,
         execute_tool_fn=worker_execute_tool,
+        disable_thinking=False,  # v4.2: sanitize 层已处理 thinking block，不禁用避免模型行为异常
     )
 
     # ── 失败重试：DeepSeek 搞不定时升级到 GPT ──
@@ -1829,9 +1919,10 @@ def run_worker(worker_cfg: dict, task: str, use_memory: bool = True,
             messages=messages,
             system_prompt=system_prompt,
             tools=tools,
-            max_turns=10,
+            max_turns=5,  # v4.2: 5 turns for upgrade retry too
             log_callback=tool_callback,
             execute_tool_fn=worker_execute_tool,
+            disable_thinking=False,  # v4.2: sanitize 层已处理 thinking block，不禁用避免模型行为异常
         )
         worker_provider_key = retry_provider
         worker_model_id = retry_model
@@ -2017,12 +2108,23 @@ def delegate_with_verification(workers: dict, worker_name: str, task: str,
     current_task = task
 
     for attempt in range(1, max_retries + 2):  # initial + retries
-        # 1. 执行 Worker
-        raw = run_worker(workers[worker_name], current_task,
-                         project_name=project_name,
-                         fresh_session=True,
-                         session_scope=f"verified_{attempt}")
-        worker_result = _normalize_worker_result(raw["result"])
+        try:
+            # 1. 执行 Worker
+            raw = run_worker(workers[worker_name], current_task,
+                             project_name=project_name,
+                             fresh_session=True,
+                             session_scope=f"verified_{attempt}")
+            worker_result = _normalize_worker_result(raw["result"])
+        except Exception as e:
+            import traceback as _tb
+            _tb.print_exc()
+            return {
+                "worker_result": None,
+                "verification": None,
+                "attempts": attempt_log,
+                "final_status": "failed",
+                "reason": f"Worker execution failed: {e}",
+            }
 
         # 2. 预算检查
         budget_status = _check_budget(
@@ -2213,30 +2315,42 @@ def _propagate_blocks(nodes: dict[str, dict]) -> int:
 
 
 def _resolve_worker_for_step(step: dict, assignments: dict, workers: dict) -> str:
-    """从 project_setup 的分配表匹配 Worker。失败时回退到第一个匹配关键词的 Worker。"""
+    """从 project_setup 的分配表匹配 Worker。
+
+    优先级：关键词匹配 > 任务描述匹配 > 默认回退。
+    """
     step_name = step.get("name", "")
     step_desc = step.get("description", "")
 
-    # 直接从 assignments 中匹配
-    for wname, winfo in assignments.items():
-        worker_tasks = winfo.get("tasks", [])
-        for t in worker_tasks:
-            if step_name in t or step_desc[:20] in t:
-                if wname in workers:
-                    return wname
-
-    # 回退：关键词匹配
+    # 1. 关键词匹配优先（最可靠，不会被跨任务污染）
     combined = step_name + step_desc
     keyword_map = {
         "Sophia": ("审查", "review", "检查", "审计"),
-        "Alex": ("开发", "代码", "实现", "编写", "code", "develop"),
-        "Nathaniel": ("测试", "test", "验证", "validate"),
+        "Alex": ("修复", "实现", "开发", "编写", "code", "develop", "fix"),
+        "Nathaniel": ("测试", "test", "验证", "validate", "pytest"),
         "Elena": ("文档", "document", "readme", "说明"),
         "Marcus": ("部署", "deploy", "ci", "cd", "运维", "环境"),
     }
     for wname, keywords in keyword_map.items():
         for kw in keywords:
             if kw.lower() in combined.lower():
+                if wname in workers:
+                    return wname
+
+    # 2. 精确匹配：step_name 出现在 worker task 描述中
+    for wname, winfo in assignments.items():
+        worker_tasks = winfo.get("tasks", [])
+        for t in worker_tasks:
+            if step_name in t:
+                if wname in workers:
+                    return wname
+
+    # 3. 模糊匹配：step_desc 前 40 个字符匹配 worker task
+    desc_prefix = step_desc[:40]
+    for wname, winfo in assignments.items():
+        worker_tasks = winfo.get("tasks", [])
+        for t in worker_tasks:
+            if desc_prefix in t:
                 if wname in workers:
                     return wname
 
@@ -2247,16 +2361,40 @@ def _resolve_worker_for_step(step: dict, assignments: dict, workers: dict) -> st
 
 
 def _build_node_task(ndata: dict, state: dict) -> str:
-    """根据节点信息构建 Worker 任务描述。"""
+    """根据节点信息构建 Worker 任务描述。v4.2: 预加载项目文件内容。"""
     name = ndata.get("name", "")
     desc = ndata.get("description", "")
     deps = ndata.get("depends_on", [])
+
+    # 从 project_description 提取项目目录并预读关键文件
+    project_desc = state.get("project_description", "")
+    project_dir_hint = ""
+    file_context = ""
+    if "C:\\" in project_desc or "/" in project_desc:
+        import re as _re2
+        paths = _re2.findall(r'[A-Z]:\\[^\s\n]+', project_desc)
+        if paths:
+            project_dir = paths[0]
+            project_dir_hint = (
+                f"\n⚠️ 项目目录：{project_dir}"
+                f"\n所有文件操作使用绝对路径。"
+            )
+            # v4.2: 预读 main.py 和 test_main.py，直接提供给 Worker
+            for fname in ("main.py", "test_main.py"):
+                fpath = os.path.join(project_dir, fname)
+                if os.path.isfile(fpath):
+                    try:
+                        with open(fpath, "r", encoding="utf-8") as _pf:
+                            content = _pf.read()
+                        file_context += f"\n\n── {fname} 内容 ──\n{content}\n── {fname} 结束 ──"
+                    except Exception:
+                        pass
 
     dep_context = ""
     if deps:
         dep_context = (
             f"\n依赖的上游节点（已完成）: {', '.join(deps)}\n"
-            "如果需要了解上游产出，可以用 read_file 查看相关文件。"
+            "上游产出已保存在项目目录中，如需确认请用 read_file。"
         )
 
     review_plan = state.get("review_plan", {})
@@ -2270,9 +2408,12 @@ def _build_node_task(ndata: dict, state: dict) -> str:
     return (
         f"[项目节点: {name}]\n"
         f"{desc}\n"
+        f"{project_dir_hint}"
+        f"{file_context}"
         f"{dep_context}"
         f"{review_hint}"
-        f"\n完成后请用 JSON 格式总结："
+        f"\n\n⚠️ 重要：以上已提供了所有需要的文件内容，请直接完成任务，不要再用 read_file 读取！"
+        f"\n完成后用 write_file 保存修改，并用 JSON 格式总结："
         f'{{"status": "success|partial|failed|needs_review", '
         f'"summary": "...", '
         f'"artifacts": [{{"path": "...", "type": "...", "summary": "..."}}], '
@@ -3451,6 +3592,7 @@ def main():
                 messages=messages,
                 system_prompt=manager_system,
                 tools=MANAGER_TOOLS,
+                disable_thinking=False,  # v4.2: sanitize 层已处理 thinking block，不禁用避免模型行为异常
             )
 
             assistant_content = []
@@ -3528,6 +3670,7 @@ def main():
                 messages=messages,
                 system_prompt=manager_system,
                 tools=MANAGER_TOOLS,
+                disable_thinking=False,  # v4.2: sanitize 层已处理 thinking block，不禁用避免模型行为异常
             )
             for fb in follow_up_blocks:
                 if fb["type"] == "text":
