@@ -166,7 +166,8 @@ class TestRuntimeRetryE2E(unittest.TestCase):
 
         def verifier_side_effect(verifier_cfg: dict,
                                   worker_result: WorkerResult,
-                                  original_task: str) -> VerificationResult:
+                                  original_task: str,
+                                  verifier_mode: str = "code_review") -> VerificationResult:
             if verifier_cfg["name"] == "Sophia":
                 return VerificationResult(verdict="pass", score=5)
             else:

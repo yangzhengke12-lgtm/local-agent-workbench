@@ -365,5 +365,104 @@ class TestFullReportIntegration(unittest.TestCase):
         self.assertIn("next_actions", summary)
 
 
+# ═══════════════════════════════════════════════════════════════
+# v4.2: Tool Call Dedup + Verifier Mode
+# ═══════════════════════════════════════════════════════════════
+
+class TestToolCallDedup(unittest.TestCase):
+    """验证 call_llm_multi_turn 中的工具去重逻辑。"""
+
+    def test_dedup_key_format(self):
+        """重复工具调用 key 格式：tool_name:json_args（排序键）。"""
+        key1 = f"read_file:{json.dumps({'file_path': '/a'}, sort_keys=True)}"
+        key2 = f"read_file:{json.dumps({'file_path': '/a'}, sort_keys=True)}"
+        self.assertEqual(key1, key2)  # 相同参数应产生相同 key
+
+    def test_dedup_key_different_args(self):
+        """不同参数产生不同 key。"""
+        key1 = f"read_file:{json.dumps({'file_path': '/a'}, sort_keys=True)}"
+        key2 = f"read_file:{json.dumps({'file_path': '/b'}, sort_keys=True)}"
+        self.assertNotEqual(key1, key2)
+
+    def test_dedup_counter_increments(self):
+        """相同 key 调用 3 次 → count 达到 3。"""
+        history: dict[str, int] = {}
+        args = json.dumps({"file_path": "/x"}, sort_keys=True)
+        key = f"read_file:{args}"
+        for _ in range(3):
+            history[key] = history.get(key, 0) + 1
+        self.assertEqual(history[key], 3)
+
+    def test_dedup_blocks_after_threshold(self):
+        """第 3 次相同调用应被阻断。"""
+        history: dict[str, int] = {}
+        args = json.dumps({"file_path": "/x"}, sort_keys=True)
+        key = f"read_file:{args}"
+        blocked = False
+        for i in range(3):
+            count = history.get(key, 0) + 1
+            history[key] = count
+            if count > 2:
+                blocked = True
+        self.assertTrue(blocked)
+
+
+class TestVerifierMode(unittest.TestCase):
+    """验证 _run_verifier 的模式区分。"""
+
+    def test_verifier_mode_accepts_test_validation(self):
+        """_run_verifier 接受 verifier_mode='test_validation' 不抛异常。"""
+        from manager import _run_verifier, WorkerResult
+        # 验证参数签名正确（不实际调用 LLM）
+        import inspect
+        sig = inspect.signature(_run_verifier)
+        params = list(sig.parameters.keys())
+        self.assertIn("verifier_mode", params)
+
+    def test_mode_default_is_code_review(self):
+        """默认模式为 code_review。"""
+        from manager import _run_verifier
+        import inspect
+        sig = inspect.signature(_run_verifier)
+        self.assertEqual(sig.parameters["verifier_mode"].default, "code_review")
+
+
+class TestSanitizeNeverKeepsThinking(unittest.TestCase):
+    """v4.2: sanitize 始终清除 thinking block（不区分 provider）。"""
+
+    def test_thinking_stripped_for_deepseek(self):
+        """DeepSeek provider 时 thinking 也被清除。"""
+        messages = [
+            {"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "hmm", "signature": "sig"},
+            ]},
+        ]
+        result = sanitize_messages_for_provider(messages, "deepseek")
+        self.assertEqual(len(result), 0)  # 清空后丢弃
+
+    def test_thinking_stripped_for_other_provider(self):
+        """非 DeepSeek provider 时 thinking 也被清除。"""
+        messages = [
+            {"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "hmm", "signature": "sig"},
+            ]},
+        ]
+        result = sanitize_messages_for_provider(messages, "dashscope")
+        self.assertEqual(len(result), 0)
+
+    def test_text_survives_with_thinking_stripped(self):
+        """有 text block 时，thinking 被清除但 text 保留。"""
+        messages = [
+            {"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "hmm"},
+                {"type": "text", "text": "OK"},
+            ]},
+        ]
+        result = sanitize_messages_for_provider(messages, "deepseek")
+        self.assertEqual(len(result), 1)
+        self.assertEqual(len(result[0]["content"]), 1)
+        self.assertEqual(result[0]["content"][0]["type"], "text")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -70,7 +70,6 @@ def update_todo(todo_id: int, body: TodoUpdate):
     todo = todos[todo_id]
     if body.title is not None:
         todo["title"] = body.title
-    # BUG: completed 字段更新逻辑被注释掉，用于验证 v4 Runtime retry 闭环
     if body.completed is not None:
         todo["completed"] = body.completed
     return todo

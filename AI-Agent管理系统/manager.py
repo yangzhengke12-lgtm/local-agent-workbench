@@ -397,26 +397,22 @@ def sanitize_messages_for_provider(messages: list[dict], provider_key: str = "")
     规则：
     - 顶层保留：role, content
     - content 为 str：保留
-    - content 为 list：保留 text block（所有 provider）+ thinking block（仅 DeepSeek）
-    - 移除 tool_use, tool_result block（这些不应在历史中裸奔）
+    - content 为 list：只保留 type=="text" 的 block
+    - 移除 thinking, tool_use, tool_result block（不持久化，不跨厂商传递）
     - 消息清理后 content 为空：丢弃该消息
     - 不修改原始 messages，返回新 list
     """
-    # DeepSeek 原生支持 thinking block，保留它避免 assistant 消息被清空
-    keep_thinking = provider_key == "deepseek"
     cleaned: list[dict] = []
 
     for msg in messages:
-        # 1. 只保留安全顶层字段
         safe_msg: dict = {}
         if "role" in msg:
             safe_msg["role"] = msg["role"]
         else:
-            continue  # 没有 role 的消息直接丢弃
+            continue
 
         raw_content = msg.get("content")
 
-        # 2. 处理 content
         if isinstance(raw_content, str):
             safe_msg["content"] = raw_content
         elif isinstance(raw_content, list):
@@ -424,31 +420,22 @@ def sanitize_messages_for_provider(messages: list[dict], provider_key: str = "")
             for block in raw_content:
                 if not isinstance(block, dict):
                     continue
-                block_type = block.get("type", "")
-                if block_type == "text":
+                if block.get("type") == "text":
                     kept_blocks.append({
                         "type": "text",
                         "text": block.get("text", ""),
                     })
-                elif block_type == "thinking" and keep_thinking:
-                    # v4.2: 保留 DeepSeek thinking block，避免 assistant 消息被清空
-                    kept_blocks.append({
-                        "type": "thinking",
-                        "thinking": block.get("thinking", ""),
-                        "signature": block.get("signature", ""),
-                    })
-                # tool_use / tool_result block 始终丢弃
+                # thinking / tool_use / tool_result 全部丢弃
             if kept_blocks:
                 safe_msg["content"] = kept_blocks
             else:
                 continue  # content list 清空后丢弃整条消息
         else:
-            continue  # 无 content 的消息丢弃
+            continue
 
-        # 3. 移除所有不安全顶层字段
+        # 移除所有不安全顶层字段
         for field in _UNSAFE_MESSAGE_FIELDS:
             safe_msg.pop(field, None)
-        # 移除其他未知字段
         extra_keys = set(safe_msg.keys()) - {"role", "content"}
         for key in extra_keys:
             safe_msg.pop(key, None)
@@ -729,6 +716,7 @@ def call_llm_multi_turn(provider_key: str, model_id: str, messages: list,
     repeat_count = 0
     total_reads = 0       # track total read_file calls this turn
     total_writes = 0      # track total write_file calls this turn
+    tool_call_history: dict[str, int] = {}  # v4.2: dedup (tool:args) → count
 
     for _turn in range(max_turns):
         force_stop = False
@@ -804,10 +792,20 @@ def call_llm_multi_turn(provider_key: str, model_id: str, messages: list,
                 if log_callback:
                     log_callback(tool_name, tool_args, "")
 
-                try:
-                    result = tool_executor(tool_name, tool_args)
-                except Exception as e:
-                    result = f"工具执行出错: {e}"
+                # v4.2: tool call dedup — 相同工具+参数超过2次，不再执行
+                dedup_key = f"{tool_name}:{json.dumps(tool_args, sort_keys=True, ensure_ascii=False)}"
+                dedup_count = tool_call_history.get(dedup_key, 0) + 1
+                tool_call_history[dedup_key] = dedup_count
+                if dedup_count > 2:
+                    result = (
+                        f"该工具调用（{tool_name}）已重复 {dedup_count} 次。"
+                        "请基于已有结果继续，不要再重复调用相同参数的工具。"
+                    )
+                else:
+                    try:
+                        result = tool_executor(tool_name, tool_args)
+                    except Exception as e:
+                        result = f"工具执行出错: {e}"
 
                 if log_callback:
                     log_callback(tool_name, tool_args, result)
@@ -820,6 +818,10 @@ def call_llm_multi_turn(provider_key: str, model_id: str, messages: list,
                     "role": "user",
                     "content": [{"type": "tool_result", "tool_use_id": tool_id, "content": result}],
                 })
+
+        # v4.2: 如果 assistant_content 只有 thinking 没有 text，补占位符防止 sanitize 清空整条消息
+        if assistant_content and not any(b.get("type") == "text" for b in assistant_content):
+            assistant_content.insert(0, {"type": "text", "text": "[分析中]"})
 
         if assistant_content:
             messages.append({"role": "assistant", "content": assistant_content})
@@ -1799,7 +1801,8 @@ def load_workers(config_path: str = "workers.json") -> dict:
 def run_worker(worker_cfg: dict, task: str, use_memory: bool = True,
                project_name: str = "",
                fresh_session: bool = False,
-               session_scope: str = "") -> dict:
+               session_scope: str = "",
+               disable_thinking: bool = False) -> dict:
     """启动一个 Worker，使用其专属工具和配置执行任务。支持多轮对话记忆。
 
     v3 升级：多厂商模型自适应 —— Worker 自主判断任务复杂度，
@@ -1898,7 +1901,7 @@ def run_worker(worker_cfg: dict, task: str, use_memory: bool = True,
         max_turns=6,  # v4.2: 6 turns with read-detection at turn 3+
         log_callback=tool_callback,
         execute_tool_fn=worker_execute_tool,
-        disable_thinking=False,  # v4.2: sanitize 层已处理 thinking block，不禁用避免模型行为异常
+        disable_thinking=disable_thinking,
     )
 
     # ── 失败重试：DeepSeek 搞不定时升级到 GPT ──
@@ -1919,10 +1922,10 @@ def run_worker(worker_cfg: dict, task: str, use_memory: bool = True,
             messages=messages,
             system_prompt=system_prompt,
             tools=tools,
-            max_turns=5,  # v4.2: 5 turns for upgrade retry too
+            max_turns=6,  # v4.2: upgrade retry
             log_callback=tool_callback,
             execute_tool_fn=worker_execute_tool,
-            disable_thinking=False,  # v4.2: sanitize 层已处理 thinking block，不禁用避免模型行为异常
+            disable_thinking=disable_thinking,
         )
         worker_provider_key = retry_provider
         worker_model_id = retry_model
@@ -2060,8 +2063,34 @@ def run_deputy(task: str, manager_tools: list) -> dict:
 
 
 def _run_verifier(verifier_cfg: dict, worker_result: WorkerResult,
-                  original_task: str) -> VerificationResult:
-    """运行单个验证者（如 Sophia/Nathaniel）对 Worker 产出做质量验证。"""
+                  original_task: str, verifier_mode: str = "code_review") -> VerificationResult:
+    """运行单个验证者对 Worker 产出做质量验证。
+
+    v4.2 模式区分：
+    - code_review (Sophia): 读文件、检查代码质量、安全
+    - test_validation (Nathaniel): 优先执行测试命令，基于测试结果判断
+    """
+    name = verifier_cfg.get("name", "Verifier")
+
+    # 构建模式特化的 prompt
+    if verifier_mode == "test_validation":
+        mode_instructions = (
+            "你是测试验证者。你的首要任务是运行测试来验证 Worker 的产出。\n"
+            "1. 如果 Worker 修改了代码，用 run_command 执行项目的测试命令（如 pytest）\n"
+            "2. 基于测试输出判断：全部通过 → pass；有失败 → needs_retry\n"
+            "3. 除非测试失败需要定位原因，否则不要 read_file\n"
+            "4. 每个文件最多读取 1 次。读取后立即给出结论。\n"
+            f"5. 最多使用 4 个工具调用。超过后必须输出 VerificationResult JSON。"
+        )
+    else:
+        mode_instructions = (
+            "你是代码审查者。请检查 Worker 的产出质量。\n"
+            "1. 如果 Worker 修改了文件，用 read_file 检查代码\n"
+            "2. 关注：逻辑正确性、安全隐患、代码风格、边界条件\n"
+            "3. 每个文件最多读取 1 次。不要重复读取同一文件。\n"
+            f"4. 最多使用 4 个工具调用。超过后必须输出 VerificationResult JSON。"
+        )
+
     prompt = (
         f"请验证以下工作产出的质量。\n\n"
         f"原始任务: {original_task}\n"
@@ -2069,18 +2098,21 @@ def _run_verifier(verifier_cfg: dict, worker_result: WorkerResult,
         f"Worker 摘要: {worker_result.summary}\n"
         f"产物列表: {json.dumps(worker_result.artifacts, ensure_ascii=False)}\n"
         f"发现的问题: {json.dumps(worker_result.issues, ensure_ascii=False)}\n\n"
-        "请做到以下至少一项：\n"
-        "  - 如果产物是文件，用 read_file 读取并检查\n"
-        "  - 如果产物是代码，考虑是否能用 run_command 跑测试或 lint\n"
-        "  - 如果有安全/设计问题，明确指出\n\n"
-        "最终输出 JSON 格式的验证结果：\n"
+        f"{mode_instructions}\n\n"
+        "⚠️ 关键规则：\n"
+        "- 不要重复读取同一个文件。读一次就够了。\n"
+        "- 禁止连续两次执行相同的工具调用。\n"
+        "- 读完后立即分析，不要再读。\n"
+        "- 必须在回复中输出 JSON 格式的验证结果。\n\n"
+        "输出格式：\n"
         '{"verdict": "pass|reject|needs_retry|needs_replan", '
         '"score": 1-5, '
         '"blocking_issues": [{"severity": "critical|high|medium|low", '
         '"description": "...", "suggestion": "..."}], '
         '"retry_instruction": "如果不通过，给 Worker 的具体改进指令"}'
     )
-    raw = run_worker(verifier_cfg, prompt, use_memory=False, fresh_session=True)
+    raw = run_worker(verifier_cfg, prompt, use_memory=False, fresh_session=True,
+                     disable_thinking=True)  # v4.2: verifier tool-calling 禁用 thinking
     return _normalize_verification_result(raw["result"])
 
 
@@ -2156,8 +2188,10 @@ def delegate_with_verification(workers: dict, worker_name: str, task: str,
             futures = {}
             for vname in verifier_names:
                 if vname in workers:
+                    # v4.2: Nathaniel → test_validation, Sophia → code_review
+                    mode = "test_validation" if vname == "Nathaniel" else "code_review"
                     future = executor.submit(
-                        _run_verifier, workers[vname], worker_result, task
+                        _run_verifier, workers[vname], worker_result, task, mode
                     )
                     futures[future] = vname
 
@@ -3592,7 +3626,7 @@ def main():
                 messages=messages,
                 system_prompt=manager_system,
                 tools=MANAGER_TOOLS,
-                disable_thinking=False,  # v4.2: sanitize 层已处理 thinking block，不禁用避免模型行为异常
+                disable_thinking=False,  # v4.2: Manager 策略思考不禁用 thinking
             )
 
             assistant_content = []
@@ -3670,7 +3704,7 @@ def main():
                 messages=messages,
                 system_prompt=manager_system,
                 tools=MANAGER_TOOLS,
-                disable_thinking=False,  # v4.2: sanitize 层已处理 thinking block，不禁用避免模型行为异常
+                disable_thinking=False,  # v4.2: Manager 策略思考不禁用 thinking
             )
             for fb in follow_up_blocks:
                 if fb["type"] == "text":
