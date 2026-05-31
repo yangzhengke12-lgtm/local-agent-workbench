@@ -192,10 +192,11 @@ class TestMergeVerdicts(unittest.TestCase):
         self.assertEqual(merged.score, 4.0)  # (4+5+3)/3
 
     def test_merge_verdicts_empty(self) -> None:
+        """v4.2: 空列表返回 needs_retry + blocking_issues 说明。"""
         merged = _merge_verdicts([])
         self.assertEqual(merged.verdict, "needs_retry")
-        self.assertEqual(merged.score, 0.0)
-        self.assertEqual(merged.blocking_issues, [])
+        self.assertEqual(merged.score, 2)
+        self.assertTrue(len(merged.blocking_issues) > 0)  # v4.2: 有说明而非空
 
     def test_merge_verdicts_collects_issues(self) -> None:
         verdicts = [

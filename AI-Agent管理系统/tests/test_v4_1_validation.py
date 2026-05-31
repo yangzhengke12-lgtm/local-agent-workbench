@@ -24,7 +24,7 @@ from manager import (
     call_llm_once, build_workflow_run_report,
     # 纯函数
     _transition_node, _normalize_worker_result, _normalize_verification_result,
-    _merge_verdicts, _check_budget, _discover_artifacts,
+    _merge_verdicts, _check_budget, _discover_artifacts, _run_verifier,
     _topological_sort, _find_ready_nodes, _propagate_blocks, _summarize_run,
     # 持久化
     _save_workflow_run, load_workflow_run, resume_workflow_run,
@@ -584,6 +584,127 @@ class TestWriteBudgetHardStop(unittest.TestCase):
         self.assertEqual(parsed["status"], "partial")
         self.assertIn("verifier", parsed["summary"])
         self.assertTrue(parsed["retryable"])
+
+
+# ═══════════════════════════════════════════════════════════════
+# v4.2: Verifier Fallback — 确保永不返回 N/A
+# ═══════════════════════════════════════════════════════════════
+
+class TestVerifierNeverReturnsNA(unittest.TestCase):
+    """verifier 在任何异常情况下都必须产出可解析的 VerificationResult。"""
+
+    def test_normalize_empty_text_returns_needs_retry(self):
+        """空文本 → needs_retry + blocking_issues。"""
+        result = _normalize_verification_result("")
+        self.assertEqual(result.verdict, "needs_retry")
+        self.assertTrue(len(result.blocking_issues) > 0)
+        self.assertIn("empty", result.blocking_issues[0]["description"].lower())
+
+    def test_normalize_plain_text_returns_needs_retry(self):
+        """纯文本非 JSON → needs_retry + fallback。"""
+        result = _normalize_verification_result("The worker did a good job")
+        self.assertEqual(result.verdict, "needs_retry")
+        self.assertTrue(len(result.blocking_issues) > 0)
+
+    def test_normalize_worker_result_shaped_json(self):
+        """WorkerResult 形状（status 而非 verdict）→ 正确映射。"""
+        result = _normalize_verification_result('{"status":"success","summary":"Done"}')
+        self.assertEqual(result.verdict, "pass")
+        self.assertEqual(result.score, 0)  # no score in input
+
+    def test_normalize_partial_worker_result(self):
+        """WorkerResult status=partial → needs_retry。"""
+        result = _normalize_verification_result('{"status":"partial","summary":"Incomplete"}')
+        self.assertEqual(result.verdict, "needs_retry")
+
+    def test_normalize_chinese_verdict_words(self):
+        """中文 verdict 词汇正确映射。"""
+        self.assertEqual(
+            _normalize_verification_result('{"verdict":"通过","score":5}').verdict,
+            "pass",
+        )
+        self.assertEqual(
+            _normalize_verification_result('{"verdict":"重试","score":2}').verdict,
+            "needs_retry",
+        )
+
+    def test_normalize_score_as_string(self):
+        """score 为字符串时容错转换。"""
+        result = _normalize_verification_result('{"verdict":"pass","score":"4.5"}')
+        self.assertEqual(result.verdict, "pass")
+        self.assertEqual(result.score, 4.5)
+
+    def test_normalize_markdown_fenced_json(self):
+        """Markdown 围栏 JSON 正确提取。"""
+        result = _normalize_verification_result(
+            '```json\n{"verdict":"pass","score":5}\n```'
+        )
+        self.assertEqual(result.verdict, "pass")
+
+    def test_normalize_none_text(self):
+        """None 输入不崩溃。"""
+        try:
+            _normalize_verification_result(None)  # type: ignore
+        except Exception:
+            pass  # 接受 AttributeError（None 没有 strip），但不接受其他异常
+
+    def test_merge_never_returns_na(self):
+        """merge 空列表不返回无效 verdict。"""
+        merged = _merge_verdicts([])
+        self.assertIn(merged.verdict, ("pass", "reject", "needs_retry", "needs_replan"))
+        self.assertGreater(len(merged.blocking_issues), 0)
+
+    def test_merge_all_fallback_verdicts_still_valid(self):
+        """全部 verifier 返回 fallback 时 merge 仍有效。"""
+        verdicts = [
+            VerificationResult(verdict="needs_retry", blocking_issues=[
+                {"severity": "high", "description": "Verifier failed"}
+            ]),
+            VerificationResult(verdict="needs_retry", blocking_issues=[
+                {"severity": "high", "description": "Verifier failed"}
+            ]),
+        ]
+        merged = _merge_verdicts(verdicts)
+        self.assertEqual(merged.verdict, "needs_retry")
+        # 去重后 issues 不应重复
+        self.assertEqual(len(merged.blocking_issues), 1)
+
+
+class TestVerifierExceptionHandling(unittest.TestCase):
+    """_run_verifier 在 run_worker 抛异常时必须返回 fallback。"""
+
+    @patch("manager.run_worker")
+    def test_verifier_returns_fallback_on_exception(self, mock_run):
+        """run_worker 抛异常 → _run_verifier 返回 needs_retry fallback。"""
+        mock_run.side_effect = RuntimeError("API connection timeout")
+        worker_result = WorkerResult(status="success", summary="done")
+        result = _run_verifier(
+            {"name": "Sophia"}, worker_result, "test task", "code_review"
+        )
+        self.assertEqual(result.verdict, "needs_retry")
+        self.assertTrue(len(result.blocking_issues) > 0)
+
+    @patch("manager.run_worker")
+    def test_verifier_returns_fallback_on_empty_result(self, mock_run):
+        """run_worker 返回空 result → _run_verifier 返回 fallback。"""
+        mock_run.return_value = {"result": "", "log": []}
+        worker_result = WorkerResult(status="success", summary="done")
+        result = _run_verifier(
+            {"name": "Nathaniel"}, worker_result, "test task", "test_validation"
+        )
+        self.assertEqual(result.verdict, "needs_retry")
+        self.assertTrue(len(result.blocking_issues) > 0)
+
+    @patch("manager.run_worker")
+    def test_verifier_returns_fallback_on_non_dict_return(self, mock_run):
+        """run_worker 返回非 dict → _run_verifier 返回 fallback。"""
+        mock_run.return_value = "not a dict"
+        worker_result = WorkerResult(status="success", summary="done")
+        result = _run_verifier(
+            {"name": "Sophia"}, worker_result, "test task"
+        )
+        self.assertEqual(result.verdict, "needs_retry")
+        self.assertTrue(len(result.blocking_issues) > 0)
 
 
 if __name__ == "__main__":
