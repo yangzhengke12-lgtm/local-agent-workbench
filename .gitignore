@@ -10,3 +10,4 @@ worker_sessions.json
 .pytest_cache/
 _gen_docx.py
 ArcGIS-Pro-Bridge-MCP-Server
+.codegraph/

@@ -2025,7 +2025,15 @@ def run_worker(worker_cfg: dict, task: str, use_memory: bool = True,
 
     # v4: 附加结构化结果（向后兼容——只增不减）
     structured = _normalize_worker_result(final_result)
-    structured.artifacts = _discover_artifacts(log)
+    # v4.2: merge artifacts — 优先用 JSON 中的，log 提取的作为补充
+    log_artifacts = _discover_artifacts(log)
+    if not structured.artifacts:
+        structured.artifacts = log_artifacts
+    elif log_artifacts:
+        seen = {a.get("path", "") for a in structured.artifacts}
+        for a in log_artifacts:
+            if a.get("path", "") not in seen:
+                structured.artifacts.append(a)
 
     return {
         "log": log,
