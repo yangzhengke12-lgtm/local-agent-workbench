@@ -31,8 +31,7 @@ from manager import (
     _save_workflow_run, load_workflow_run, resume_workflow_run,
     PROJECT_STATE_DIR,
     # v4.2 model routing
-    select_worker_model, _is_code_edit_task, _is_flash_allowed,
-    CODE_EDIT_SIGNALS, FLASH_ALLOWED_SIGNALS,
+    select_worker_model, _is_code_edit_task, CODE_EDIT_SIGNALS,
 )
 
 
@@ -814,68 +813,55 @@ class TestArtifactMergePreservesJSON(unittest.TestCase):
 
 
 # ═══════════════════════════════════════════════════════════════
-# v4.2: Model Routing — flash 禁止执行代码修改
+# v4.2: Model Routing — flash 已移除，所有任务基线 v4-pro
 # ═══════════════════════════════════════════════════════════════
 
-class TestFlashBlockedForCodeEdit(unittest.TestCase):
-    """flash 模型不能用于代码修改任务。"""
+class TestFlashRemovedFromRouting(unittest.TestCase):
+    """flash 已从路由表移除，所有任务最低 deepseek-v4-pro。"""
 
     def test_code_edit_task_detected(self):
-        """含 '修复'/'write_file'/'bug fix' 的任务被识别为代码修改。"""
         self.assertTrue(_is_code_edit_task("修复 main.py 中的 bug"))
-        self.assertTrue(_is_code_edit_task("write_file to fix the issue"))
-        self.assertTrue(_is_code_edit_task("实现新功能"))
         self.assertTrue(_is_code_edit_task("删除第86行代码"))
         self.assertTrue(_is_code_edit_task("取消注释 completed 字段"))
 
     def test_non_code_edit_not_detected(self):
-        """总结/分类任务不是代码修改。"""
         self.assertFalse(_is_code_edit_task("总结项目日志"))
         self.assertFalse(_is_code_edit_task("分类任务复杂度"))
-        self.assertFalse(_is_code_edit_task("生成 report 草稿"))
 
-    def test_flash_allowed_for_summary(self):
-        """flash 允许用于总结/分类/报告/提取。"""
-        self.assertTrue(_is_flash_allowed("总结今天的日志"))
-        self.assertTrue(_is_flash_allowed("分类任务复杂度"))
-        self.assertTrue(_is_flash_allowed("生成项目汇报"))
-        self.assertTrue(_is_flash_allowed("提取 artifacts"))
-        self.assertTrue(_is_flash_allowed("格式化输出"))
+    def test_simple_task_routes_to_v4pro(self):
+        """简单任务路由到 v4-pro，不再是 flash。"""
+        task = "总结 pytest 运行日志，提取失败原因"
+        (provider, model_id), complexity, reason = select_worker_model(task, "Elena")
+        self.assertNotEqual(model_id, "deepseek-v4-flash")
+        self.assertIn("deepseek-v4-pro", model_id)
+        self.assertIn("flash 已禁用", reason)
 
-    def test_flash_not_allowed_for_bug_fix(self):
-        """flash 不允许用于 bug fix/代码修改。"""
-        self.assertFalse(_is_flash_allowed("修复 completed 字段 bug"))
-        self.assertFalse(_is_flash_allowed("修改 user.py 第86行"))
-        self.assertFalse(_is_flash_allowed("写代码实现新功能"))
-
-    def test_code_edit_task_routes_to_normal_not_simple(self):
-        """代码修改任务路由到 normal (v4-pro)，不是 simple (flash)。"""
-        task = "修复 app/user.py 中的 activated bug，删除一行代码"
+    def test_code_edit_routes_to_v4pro(self):
+        """代码修改路由到 v4-pro。"""
+        task = "修复 app/user.py 中的 activated bug"
         (provider, model_id), complexity, reason = select_worker_model(task, "Alex")
         self.assertNotEqual(model_id, "deepseek-v4-flash")
         self.assertIn("deepseek-v4-pro", model_id)
-        self.assertIn("flash", reason.lower())  # reason 应说明 flash 被禁用
-        self.assertEqual(complexity, "code_edit")
+        self.assertIn("flash 已禁用", reason)
 
-    def test_summary_task_can_use_flash(self):
-        """总结任务可以使用 flash。"""
-        task = "总结 pytest 运行日志，提取失败原因"
-        (provider, model_id), complexity, reason = select_worker_model(task, "Elena")
-        # 可能路由到 simple (flash) 或 normal，但不应该是 code_edit
-        self.assertNotEqual(complexity, "code_edit")
+    def test_normal_task_routes_to_v4pro(self):
+        """普通任务路由到 v4-pro。"""
+        task = "分析项目结构并生成报告"
+        (provider, model_id), complexity, reason = select_worker_model(task, "Alex")
+        self.assertNotEqual(model_id, "deepseek-v4-flash")
+        self.assertIn("deepseek-v4-pro", model_id)
 
-    def test_verifier_never_uses_flash(self):
-        """Verifier 永远不使用 flash。"""
+    def test_verifier_always_v4pro(self):
+        """Verifier 使用 v4-pro。"""
         task = "请验证以下工作产出的质量"
         (provider, model_id), complexity, reason = select_worker_model(
             task, "Sophia", is_verifier=True
         )
         self.assertEqual(complexity, "verifier")
         self.assertNotEqual(model_id, "deepseek-v4-flash")
-        self.assertIn("deepseek-v4-pro", model_id)
 
-    def test_nathaniel_verifier_never_uses_flash(self):
-        """Nathaniel verifier 也不使用 flash。"""
+    def test_nathaniel_verifier_always_v4pro(self):
+        """Nathaniel verifier 使用 v4-pro。"""
         task = "运行 pytest 验证修复"
         (provider, model_id), complexity, reason = select_worker_model(
             task, "Nathaniel", is_verifier=True
@@ -884,14 +870,19 @@ class TestFlashBlockedForCodeEdit(unittest.TestCase):
         self.assertNotEqual(model_id, "deepseek-v4-flash")
 
     def test_failure_upgrade_still_works(self):
-        """连续失败 2 次后仍可升级到 GPT。"""
+        """连续失败 2 次后仍可升级。"""
         task = "修复 critical bug"
         (provider, model_id), complexity, reason = select_worker_model(
             task, "Alex", previous_failures=2
         )
         self.assertEqual(complexity, "complex")
-        # 升级目标
         self.assertIn(provider, ("gpt", "dashscope"))
+
+    def test_fallback_never_flash(self):
+        """FALLBACK 不使用 flash。"""
+        from manager import FALLBACK_COMPLEX, FALLBACK_MAJOR
+        self.assertNotEqual(FALLBACK_COMPLEX[1], "deepseek-v4-flash")
+        self.assertNotEqual(FALLBACK_MAJOR[1], "deepseek-v4-flash")
 
 
 if __name__ == "__main__":

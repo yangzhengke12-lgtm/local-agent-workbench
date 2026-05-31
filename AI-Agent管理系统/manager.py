@@ -93,7 +93,7 @@ if OPENAI_API_KEY and OPENAI_BASE_URL:
 # ── 模型路由表 ──────────────────────────────────────────────
 # GPT 极贵，优先 DeepSeek。只有 DeepSeek 搞不定才升级。
 MODEL_TIERS = {
-    "simple":   ("deepseek", "deepseek-v4-flash"),       # 琐碎任务，极低成本
+    "simple":   ("deepseek", "deepseek-v4-pro[1M]"),     # flash 已禁用，v4-pro 基线
     "normal":   ("deepseek", "deepseek-v4-pro[1M]"),     # 主力干活，1M 上下文
     "complex":  ("deepseek", "deepseek-v4-pro[1M]"),     # 复杂也先用 DeepSeek，失败再升级
     "major":    ("gpt", "gpt-5.5"),                      # 重大决策才直接用 GPT-5.5
@@ -1084,22 +1084,11 @@ COMPLEXITY_SIGNALS_MAJOR = [
     "安全漏洞", "资金", "合规", "用户数据",
 ]
 
-# v4.2: 代码修改任务信号 — flash 模型禁止执行此类任务
+# v4.2: 代码修改任务信号 — 历史兼容，标记任务类型
 CODE_EDIT_SIGNALS = [
     "write_file", "replace_text", "apply_patch", "bug fix", "fix",
     "code edit", "refactor", "implementation",
     "修改", "修复", "重构", "实现", "写代码", "编辑", "删除", "取消注释",
-]
-
-# v4.2: flash 模型允许的任务类型（白名单）
-FLASH_ALLOWED_SIGNALS = [
-    "summary", "总结", "summarize",
-    "classification", "分类", "classify",
-    "report", "汇报", "报告",
-    "artifact", "提取",
-    "Q&A", "问答", "question",
-    "format", "格式化",
-    "log", "日志",
 ]
 
 print_lock = threading.Lock()
@@ -1354,18 +1343,9 @@ def _resolve_route(tier_key: str) -> tuple:
 
 
 def _is_code_edit_task(task: str) -> bool:
-    """v4.2: 检测任务是否涉及代码修改。flash 模型禁止执行此类任务。"""
+    """v4.2: 检测任务是否涉及代码修改。"""
     task_lower = task.lower()
     for kw in CODE_EDIT_SIGNALS:
-        if kw.lower() in task_lower:
-            return True
-    return False
-
-
-def _is_flash_allowed(task: str) -> bool:
-    """v4.2: flash 模型仅允许用于低风险文本/分类任务。"""
-    task_lower = task.lower()
-    for kw in FLASH_ALLOWED_SIGNALS:
         if kw.lower() in task_lower:
             return True
     return False
@@ -1376,24 +1356,23 @@ def select_worker_model(task: str, worker_name: str,
                          is_verifier: bool = False) -> tuple:
     """根据任务复杂度自主选择合适的模型。
 
-    返回 (model, complexity_label, reason)。
+    返回 ((provider, model_id), complexity_label, reason)。
 
     判断逻辑（优先级从高到低）：
     1. Verifier 最低 deepseek-v4-pro
-    2. 代码修改任务最低 deepseek-v4-pro（flash 禁止）
-    3. 前次模型两次尝试失败 → 自动升级
-    4. 关键词匹配 → simple / complex / major
-    5. 默认 → normal
+    2. 前次模型两次尝试失败 → 自动升级
+    3. 关键词匹配 → complex / major（simple 已禁用 flash，统一走 normal）
+    4. 默认 → normal (deepseek-v4-pro[1M])
     """
     task_lower = task.lower()
 
-    # v4.2: Verifier 最低 deepseek-v4-pro，不允许 flash
+    # v4.2: Verifier 最低 deepseek-v4-pro
     if is_verifier:
         route = _resolve_route("normal")
         return (route, "verifier",
-                f"Verifier {worker_name} 最低使用 [{route[0]}]{route[1]}，不允许 flash")
+                f"Verifier {worker_name} 最低使用 [{route[0]}]{route[1]}")
 
-    # 连续失败 → 自动升级到 GPT（仅当当前不是 GPT 时）
+    # 连续失败 → 自动升级到 GPT
     if previous_failures >= 2:
         if UPGRADE_TARGET[0] in PROVIDERS:
             route = UPGRADE_TARGET
@@ -1416,30 +1395,14 @@ def select_worker_model(task: str, worker_name: str,
         return (route, "complex",
                 f"任务复杂度高（匹配 {complex_count} 个复杂信号），启用 [complex] {route[1]}")
 
-    # v4.2: 代码修改任务 → 最低 v4-pro，flash 被禁用
+    # v4.2: flash 已禁用，所有任务基线 deepseek-v4-pro
+    # simple/normal/code_edit 统一走 normal tier
+    route = _resolve_route("normal")
     code_edit = _is_code_edit_task(task)
     if code_edit:
-        route = _resolve_route("normal")
         return (route, "code_edit",
-                f"代码修改任务，flash 被禁用，最低使用 [{route[0]}]{route[1]}")
-
-    # 简单信号（至少 1 个，且无复杂/重大信号，且非代码修改）
-    simple_count = sum(1 for kw in COMPLEXITY_SIGNALS_SIMPLE if kw.lower() in task_lower)
-    if simple_count >= 1:
-        # v4.2: flash 白名单检查
-        if _is_flash_allowed(task):
-            route = _resolve_route("simple")
-            return (route, "simple",
-                    f"简单任务（匹配简单信号: {simple_count} 个），flash 允许（白名单匹配）")
-        else:
-            # 简单信号但不在白名单 → 升级到 normal
-            route = _resolve_route("normal")
-            return (route, "normal",
-                    f"匹配简单信号但不匹配 flash 白名单，升级到 [{route[0]}]{route[1]}")
-
-    # 默认
-    route = _resolve_route("normal")
-    return (route, "normal", "常规任务，使用默认模型")
+                f"代码修改任务，使用 [{route[0]}]{route[1]}（flash 已禁用）")
+    return (route, "normal", f"常规任务，使用 [{route[0]}]{route[1]}（flash 已禁用）")
 
 
 def select_manager_model(user_input: str, context_complexity: str = "") -> tuple:
@@ -3934,7 +3897,7 @@ def main():
         "- 需要实际操作时，必须指派给有相应权限的员工\n"
         "- 同一轮回复中返回多个 delegate_task 可以让员工并行工作\n"
         "- 每个员工交付结果后，用 evaluate_result 进行三维评分\n"
-        "- 员工会自动根据任务复杂度选择最佳厂商+模型（简单→flash，常规→DeepSeek 1M，复杂→千问，重大→MiniMax）\n"
+        "- 员工会自动根据任务复杂度选择最佳厂商+模型（基线 deepseek-v4-pro，重大决策→GPT-5.5）\n"
         "- 遇到需要多方意见的复杂问题时，用 roundtable_discuss 发起圆桌讨论\n"
         "- 重要的经验教训用 record_knowledge 记录到共享知识库\n"
         "- 定期用 get_dashboard 查看团队状态\n"
