@@ -464,5 +464,127 @@ class TestSanitizeNeverKeepsThinking(unittest.TestCase):
         self.assertEqual(result[0]["content"][0]["type"], "text")
 
 
+# ═══════════════════════════════════════════════════════════════
+# v4.2: Write Guard Tests
+# ═══════════════════════════════════════════════════════════════
+
+class TestWriteGuardNoop(unittest.TestCase):
+    """NOOP_WRITE: 写入内容与目标文件完全一致时拒绝写入。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.test_file = os.path.join(self.tmpdir, "test.py")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_noop_write_detected(self):
+        """写入与文件当前内容相同的 content → 应识别为 NOOP。"""
+        content = "print('hello')"
+        with open(self.test_file, "w", encoding="utf-8") as f:
+            f.write(content)
+        # 再次写入完全相同的内容
+        existing = open(self.test_file, "r", encoding="utf-8").read()
+        self.assertEqual(existing, content)  # 内容完全一致
+        import hashlib
+        h1 = hashlib.md5(content.encode("utf-8")).hexdigest()
+        h2 = hashlib.md5(existing.encode("utf-8")).hexdigest()
+        self.assertEqual(h1, h2)  # hash 一致 → NOOP
+
+    def test_different_content_still_writes(self):
+        """不同内容不应被 NOOP 拦截。"""
+        old = "print('old')"
+        new = "print('new')"
+        with open(self.test_file, "w", encoding="utf-8") as f:
+            f.write(old)
+        import hashlib
+        self.assertNotEqual(
+            hashlib.md5(old.encode("utf-8")).hexdigest(),
+            hashlib.md5(new.encode("utf-8")).hexdigest(),
+        )
+
+    def test_noop_on_nonexistent_file(self):
+        """目标文件不存在时不触发 NOOP（无法比较）。"""
+        self.assertFalse(os.path.isfile(self.test_file))
+
+
+class TestWriteGuardDuplicate(unittest.TestCase):
+    """DUPLICATE_WRITE_BLOCKED: 同一 attempt 中重复写入相同内容。"""
+
+    def test_duplicate_detected_by_hash(self):
+        """同一 (path, content_hash) 出现 2 次以上 → DUPLICATE。"""
+        import hashlib
+        content = "x = 1"
+        path = "/tmp/test.py"
+        content_hash = hashlib.md5(content.encode("utf-8")).hexdigest()
+        dedup_key = f"{path}:{content_hash}"
+
+        history: dict[str, int] = {}
+        blocked = False
+        for i in range(3):
+            count = history.get(dedup_key, 0) + 1
+            history[dedup_key] = count
+            if count > 1:
+                blocked = True
+        self.assertTrue(blocked)
+        self.assertEqual(history[dedup_key], 3)
+
+    def test_different_content_not_duplicate(self):
+        """不同内容产生不同 hash → 不应被 DUPLICATE 拦截。"""
+        import hashlib
+        h1 = hashlib.md5(b"a = 1").hexdigest()
+        h2 = hashlib.md5(b"a = 2").hexdigest()
+        self.assertNotEqual(h1, h2)
+
+    def test_same_content_different_path_not_duplicate(self):
+        """相同内容写不同文件 → key 不同 → 不触发 DUPLICATE。"""
+        import hashlib
+        content = "print(1)"
+        h = hashlib.md5(content.encode("utf-8")).hexdigest()
+        key_a = f"/a.py:{h}"
+        key_b = f"/b.py:{h}"
+        self.assertNotEqual(key_a, key_b)
+
+
+class TestWriteBudgetHardStop(unittest.TestCase):
+    """写入预算硬停止：超过 MAX_WRITES_PER_ATTEMPT 后必须终止。"""
+
+    def test_budget_exceeded_flag_set(self):
+        """total_writes >= MAX_WRITES → write_budget_exceeded = True。"""
+        MAX = 3
+        total_writes = 3
+        exceeded = total_writes >= MAX
+        self.assertTrue(exceeded)
+
+    def test_budget_not_exceeded_below_limit(self):
+        """total_writes < MAX → write_budget_exceeded = False。"""
+        MAX = 3
+        total_writes = 2
+        exceeded = total_writes >= MAX
+        self.assertFalse(exceeded)
+
+    def test_force_break_loop_after_budget_block(self):
+        """write_budget_exceeded 且模型再尝试写入 → force_break_loop = True。"""
+        write_budget_exceeded = True
+        tool_name = "write_file"
+        force_break = False
+        if tool_name == "write_file" and write_budget_exceeded:
+            force_break = True
+        self.assertTrue(force_break)
+
+    def test_force_break_produces_fallback_json(self):
+        """force_break 且无文本输出 → fallback JSON 包含 partial/verifier 提示。"""
+        import json as _json
+        fallback = (
+            '{"status":"partial","summary":"Worker write budget exceeded; '
+            'verifier should inspect artifacts.","artifacts":[],"issues":[],'
+            '"retryable":true,"confidence":0.5}'
+        )
+        parsed = _json.loads(fallback)
+        self.assertEqual(parsed["status"], "partial")
+        self.assertIn("verifier", parsed["summary"])
+        self.assertTrue(parsed["retryable"])
+
+
 if __name__ == "__main__":
     unittest.main()

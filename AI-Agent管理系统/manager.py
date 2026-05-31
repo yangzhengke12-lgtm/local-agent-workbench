@@ -356,26 +356,35 @@ def _check_budget(stats: dict, budget: Budget) -> dict:
 def _discover_artifacts(log: list) -> list[dict]:
     """从 Worker 执行日志中提取文件产物。兼容字符串和字典两种 log 格式。"""
     artifacts: list[dict] = []
+    seen_paths: set[str] = set()
     for entry in log:
-        if isinstance(entry, str):
-            continue  # skip plain text log entries
-        if not isinstance(entry, dict):
-            continue
-        tool_name = entry.get("tool", "")
-        if tool_name in ("write_file", "save_template"):
-            try:
-                args = entry.get("args", {})
-                if isinstance(args, str):
-                    args = json.loads(args)
-                path = args.get("path", args.get("file_path", ""))
-                if path:
-                    artifacts.append({
-                        "path": path,
-                        "type": tool_name,
-                        "summary": f"{tool_name}: {path}",
-                    })
-            except (json.JSONDecodeError, TypeError):
-                pass
+        path = ""
+        tool_name = ""
+        if isinstance(entry, dict):
+            tool_name = entry.get("tool", "")
+            if tool_name in ("write_file", "save_template"):
+                try:
+                    args = entry.get("args", {})
+                    if isinstance(args, str):
+                        args = json.loads(args)
+                    path = args.get("path", args.get("file_path", ""))
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        elif isinstance(entry, str):
+            # v4.2: 从字符串 log 中正则提取 write_file 路径
+            import re as _re3
+            m = _re3.search(r'write_file.*?file_path["\':]+\s*["\']([^"\']+)', entry)
+            if m:
+                path = m.group(1)
+                tool_name = "write_file"
+
+        if path and path not in seen_paths:
+            seen_paths.add(path)
+            artifacts.append({
+                "path": path,
+                "type": tool_name or "write_file",
+                "summary": f"{tool_name or 'write_file'}: {path}",
+            })
     return artifacts
 
 
@@ -717,6 +726,11 @@ def call_llm_multi_turn(provider_key: str, model_id: str, messages: list,
     total_reads = 0       # track total read_file calls this turn
     total_writes = 0      # track total write_file calls this turn
     tool_call_history: dict[str, int] = {}  # v4.2: dedup (tool:args) → count
+    write_content_hashes: dict[str, int] = {}  # v4.2: (path, content_hash) → count
+    write_budget_exceeded = False  # v4.2: hard stop flag
+    force_break_loop = False       # v4.2: break entire loop after this turn
+    first_write_success = False    # v4.2: track if at least one write succeeded
+    MAX_WRITES_PER_ATTEMPT = 3
 
     for _turn in range(max_turns):
         force_stop = False
@@ -741,16 +755,15 @@ def call_llm_multi_turn(provider_key: str, model_id: str, messages: list,
             })
             total_reads = 0
             force_stop = True
-        elif total_writes >= 2:
+        elif total_writes >= MAX_WRITES_PER_ATTEMPT:
+            write_budget_exceeded = True  # v4.2: 硬停止——后续 write_file 直接拒绝
             messages.append({
                 "role": "user",
                 "content": (
-                    "你已经写入了足够多次文件。请立即给出你的最终总结，"
-                    "不要再调用 write_file。直接输出文本回复。"
+                    f"写入预算已耗尽（最多 {MAX_WRITES_PER_ATTEMPT} 次）。"
+                    "禁止再调用 write_file。请立即输出 WorkerResult JSON。"
                 ),
             })
-            total_writes = 0
-            force_stop = True
 
         # v4.1: sanitize messages before every API call to prevent thinking block pollution
         safe_messages = sanitize_messages_for_provider(messages, provider_key)
@@ -792,20 +805,69 @@ def call_llm_multi_turn(provider_key: str, model_id: str, messages: list,
                 if log_callback:
                     log_callback(tool_name, tool_args, "")
 
-                # v4.2: tool call dedup — 相同工具+参数超过2次，不再执行
-                dedup_key = f"{tool_name}:{json.dumps(tool_args, sort_keys=True, ensure_ascii=False)}"
-                dedup_count = tool_call_history.get(dedup_key, 0) + 1
-                tool_call_history[dedup_key] = dedup_count
-                if dedup_count > 2:
-                    result = (
-                        f"该工具调用（{tool_name}）已重复 {dedup_count} 次。"
-                        "请基于已有结果继续，不要再重复调用相同参数的工具。"
-                    )
-                else:
-                    try:
-                        result = tool_executor(tool_name, tool_args)
-                    except Exception as e:
-                        result = f"工具执行出错: {e}"
+                # ── v4.2: write_file 专项 guard ──
+                write_handled = False
+                if tool_name == "write_file":
+                    content = tool_args.get("content", "")
+                    path = tool_args.get("file_path", "")
+                    import hashlib
+                    content_hash = hashlib.md5(content.encode("utf-8")).hexdigest()
+
+                    # Guard 1: 目标文件已包含相同内容 → NOOP + force break
+                    if os.path.isfile(path):
+                        try:
+                            with open(path, "r", encoding="utf-8") as _f:
+                                existing = _f.read()
+                            if existing == content:
+                                result = (
+                                    f"NOOP_WRITE: {path} 已包含完全相同的內容。"
+                                    "不需要再次写入。请立即输出最终的 WorkerResult JSON。"
+                                )
+                                write_handled = True
+                                force_break_loop = True  # v4.2: 文件已是最新，必须终止
+                        except Exception:
+                            pass
+
+                    # Guard 2: 同一 attempt 中重复写相同内容 → DUPLICATE + force break
+                    if not write_handled:
+                        dedup_write_key = f"{path}:{content_hash}"
+                        write_count = write_content_hashes.get(dedup_write_key, 0) + 1
+                        write_content_hashes[dedup_write_key] = write_count
+                        if write_count > 1:
+                            result = (
+                                f"DUPLICATE_WRITE_BLOCKED: {path} 已被写入相同內容 {write_count} 次。"
+                                "立即停止工具调用，输出最终的 WorkerResult JSON。"
+                            )
+                            write_handled = True
+                            force_break_loop = True  # v4.2: 重复写入必须终止
+
+                    # Guard 3: 写入预算硬停止
+                    if not write_handled and write_budget_exceeded:
+                        result = (
+                            f"WRITE_BUDGET_EXCEEDED: 本轮已达到最大写入次数限制。"
+                            "禁止再写文件。立即输出最终的 WorkerResult JSON。"
+                        )
+                        write_handled = True
+                        force_break_loop = True  # v4.2: 写完预算后必须终止
+
+                # ── v4.2: general tool call dedup ──
+                if not write_handled:
+                    dedup_key = f"{tool_name}:{json.dumps(tool_args, sort_keys=True, ensure_ascii=False)}"
+                    dedup_count = tool_call_history.get(dedup_key, 0) + 1
+                    tool_call_history[dedup_key] = dedup_count
+                    if dedup_count > 2:
+                        result = (
+                            f"该工具调用（{tool_name}）已重复 {dedup_count} 次。"
+                            "请基于已有结果继续，不要再重复调用相同参数的工具。"
+                        )
+                    else:
+                        try:
+                            result = tool_executor(tool_name, tool_args)
+                            if tool_name == "write_file" and "成功" in str(result):
+                                first_write_success = True
+                        except Exception as e:
+                            result = f"工具执行出错: {e}"
+                # ── end write guard ──
 
                 if log_callback:
                     log_callback(tool_name, tool_args, result)
@@ -826,8 +888,36 @@ def call_llm_multi_turn(provider_key: str, model_id: str, messages: list,
         if assistant_content:
             messages.append({"role": "assistant", "content": assistant_content})
 
-        if not has_tool_use:
+        if not has_tool_use or force_break_loop:
             break
+
+    # v4.2: if write budget forced break, synthesize a proper WorkerResult
+    if force_break_loop:
+        written_files = list({k.split(":")[0] for k in write_content_hashes.keys()})
+        artifacts_json = json.dumps(
+            [{"path": p, "type": "write_file", "summary": f"Modified {os.path.basename(p)}"} for p in written_files],
+            ensure_ascii=False,
+        )
+        status = "success" if first_write_success else "partial"
+        # 如果模型已经输出了 JSON，优先使用；否则用构造的
+        existing_json = _extract_json_from_text(final_text) if final_text.strip() else None
+        if existing_json:
+            try:
+                data = json.loads(existing_json)
+                data["artifacts"] = json.loads(artifacts_json)
+                final_text = json.dumps(data, ensure_ascii=False)
+            except (json.JSONDecodeError, KeyError):
+                final_text = (
+                    f'{{"status":"{status}","summary":"File write completed (budget enforced); '
+                    f'verifier should inspect artifacts.","artifacts":{artifacts_json},"issues":[],'
+                    '"retryable":true,"confidence":0.8}'
+                )
+        else:
+            final_text = (
+                f'{{"status":"{status}","summary":"File write completed (budget enforced); '
+                f'verifier should inspect artifacts.","artifacts":{artifacts_json},"issues":[],'
+                '"retryable":true,"confidence":0.8}'
+            )
 
     return final_text
 
@@ -1847,9 +1937,9 @@ def run_worker(worker_cfg: dict, task: str, use_memory: bool = True,
         "请如实说明，不要强行操作。完成后请清晰汇报。\n"
         "重要行为守则：\n"
         "- 【关键】每个文件最多读取一次。读取后立即进行分析，不要重复读取同一文件。\n"
-        "- 【关键】读完所有必要文件后，立即给出结论和输出，不要再调用工具。\n"
+        "- 【关键】写文件后必须立即输出 WorkerResult JSON 总结，不要反复写。\n"
+        "- 【关键】如果工具返回 NOOP_WRITE / DUPLICATE_WRITE_BLOCKED / WRITE_BUDGET_EXCEEDED，必须立即停止所有工具调用，输出最终的 JSON。\n"
         "- 完成后必须用 JSON 格式总结：{\"status\": \"success|partial|failed\", \"summary\": \"...\", \"artifacts\": [...]}\n"
-        "- 如果发现了值得团队记住的经验教训或 bug 模式，用 save_template 或 search_knowledge 记录下来\n"
         "- 遇到问题优先用 ask_coworker 找合适的同事求助，不要独自硬撑"
     )
 
