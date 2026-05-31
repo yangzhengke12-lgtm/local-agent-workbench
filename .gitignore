@@ -11,3 +11,4 @@ worker_sessions.json
 _gen_docx.py
 ArcGIS-Pro-Bridge-MCP-Server
 .codegraph/
+fastapi-crud-test/

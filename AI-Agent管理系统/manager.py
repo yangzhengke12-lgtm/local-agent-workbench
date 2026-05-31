@@ -812,6 +812,9 @@ def call_llm_multi_turn(provider_key: str, model_id: str, messages: list,
     write_budget_exceeded = False  # v4.2: hard stop flag
     force_break_loop = False       # v4.2: break entire loop after this turn
     first_write_success = False    # v4.2: track if at least one write succeeded
+    noop_write_count = 0           # v4.2: count NOOP_WRITE blocks
+    duplicate_write_count = 0      # v4.2: count DUPLICATE_WRITE_BLOCKED blocks
+    guard_reason = ""              # v4.2: which guard triggered (noop/duplicate/budget)
     MAX_WRITES_PER_ATTEMPT = 3
 
     for _turn in range(max_turns):
@@ -906,7 +909,10 @@ def call_llm_multi_turn(provider_key: str, model_id: str, messages: list,
                                     "不需要再次写入。请立即输出最终的 WorkerResult JSON。"
                                 )
                                 write_handled = True
-                                force_break_loop = True  # v4.2: 文件已是最新，必须终止
+                                force_break_loop = True
+                                noop_write_count += 1
+                                if not guard_reason:
+                                    guard_reason = "noop_write"
                         except Exception:
                             pass
 
@@ -921,7 +927,10 @@ def call_llm_multi_turn(provider_key: str, model_id: str, messages: list,
                                 "立即停止工具调用，输出最终的 WorkerResult JSON。"
                             )
                             write_handled = True
-                            force_break_loop = True  # v4.2: 重复写入必须终止
+                            force_break_loop = True
+                            duplicate_write_count += 1
+                            if not guard_reason:
+                                guard_reason = "duplicate_write_blocked"
 
                     # Guard 3: 写入预算硬停止
                     if not write_handled and write_budget_exceeded:
@@ -930,7 +939,9 @@ def call_llm_multi_turn(provider_key: str, model_id: str, messages: list,
                             "禁止再写文件。立即输出最终的 WorkerResult JSON。"
                         )
                         write_handled = True
-                        force_break_loop = True  # v4.2: 写完预算后必须终止
+                        force_break_loop = True
+                        if not guard_reason:
+                            guard_reason = "write_budget_exceeded"
 
                 # ── v4.2: general tool call dedup ──
                 if not write_handled:
@@ -973,33 +984,87 @@ def call_llm_multi_turn(provider_key: str, model_id: str, messages: list,
         if not has_tool_use or force_break_loop:
             break
 
-    # v4.2: if write budget forced break, synthesize a proper WorkerResult
+    # v4.2: if write budget forced break, synthesize an evidence-rich WorkerResult
     if force_break_loop:
         written_files = list({k.split(":")[0] for k in write_content_hashes.keys()})
-        artifacts_json = json.dumps(
-            [{"path": p, "type": "write_file", "summary": f"Modified {os.path.basename(p)}"} for p in written_files],
-            ensure_ascii=False,
-        )
-        status = "success" if first_write_success else "partial"
-        # 如果模型已经输出了 JSON，优先使用；否则用构造的
+        artifacts_list = [
+            {"path": p, "type": "write_file", "summary": f"Modified {os.path.basename(p)}"}
+            for p in written_files
+        ]
+        artifacts_json = json.dumps(artifacts_list, ensure_ascii=False)
+
+        # v4.2: git diff evidence for changed files
+        diff_evidence: dict[str, str] = {}
+        for fpath in written_files:
+            if os.path.isfile(fpath):
+                try:
+                    import subprocess as _sp
+                    parent = os.path.dirname(fpath) or "."
+                    fname = os.path.basename(fpath)
+                    r = _sp.run(
+                        ["git", "diff", "--", fname],
+                        capture_output=True, encoding="utf-8", errors="replace",
+                        timeout=5, cwd=parent,
+                    )
+                    if r.stdout.strip():
+                        diff_evidence[fpath] = r.stdout.strip()[:2000]
+                except Exception:
+                    pass
+
+        # evidence block
+        evidence = {
+            "changed_files": written_files,
+            "write_count": total_writes,
+            "noop_write_count": noop_write_count,
+            "duplicate_write_count": duplicate_write_count,
+            "first_write_succeeded": first_write_success,
+            "guard_reason": guard_reason or "unknown",
+        }
+        if diff_evidence:
+            evidence["diff"] = diff_evidence
+
+        issues = []
+        if guard_reason:
+            issues.append({
+                "severity": "medium",
+                "description": f"Runtime guard triggered: {guard_reason}. Verifier must inspect artifacts to confirm correctness.",
+                "suggestion": "Check file content, run tests, and verify the change is correct before passing.",
+            })
+
+        # use needs_review — let verifier decide, not auto-success
+        status = "needs_review"
+
+        # 如果模型已经输出了 JSON，merge evidence；否则全新构造
         existing_json = _extract_json_from_text(final_text) if final_text.strip() else None
         if existing_json:
             try:
                 data = json.loads(existing_json)
-                data["artifacts"] = json.loads(artifacts_json)
+                data["artifacts"] = artifacts_list
+                data["evidence"] = evidence
+                if issues:
+                    data["issues"] = data.get("issues", []) + issues
+                data["status"] = status
                 final_text = json.dumps(data, ensure_ascii=False)
             except (json.JSONDecodeError, KeyError):
-                final_text = (
-                    f'{{"status":"{status}","summary":"File write completed (budget enforced); '
-                    f'verifier should inspect artifacts.","artifacts":{artifacts_json},"issues":[],'
-                    '"retryable":true,"confidence":0.8}'
-                )
+                final_text = json.dumps({
+                    "status": status,
+                    "summary": f"Runtime guard '{guard_reason}' stopped tool execution. Verifier must inspect artifacts.",
+                    "artifacts": artifacts_list,
+                    "issues": issues,
+                    "evidence": evidence,
+                    "retryable": True,
+                    "confidence": 0.5,
+                }, ensure_ascii=False)
         else:
-            final_text = (
-                f'{{"status":"{status}","summary":"File write completed (budget enforced); '
-                f'verifier should inspect artifacts.","artifacts":{artifacts_json},"issues":[],'
-                '"retryable":true,"confidence":0.8}'
-            )
+            final_text = json.dumps({
+                "status": status,
+                "summary": f"Runtime guard '{guard_reason}' stopped tool execution. Verifier must inspect artifacts.",
+                "artifacts": artifacts_list,
+                "issues": issues,
+                "evidence": evidence,
+                "retryable": True,
+                "confidence": 0.5,
+            }, ensure_ascii=False)
 
     return final_text
 
@@ -1017,6 +1082,24 @@ COMPLEXITY_SIGNALS_MAJOR = [
     "重大", "关键", "数据模型变更", "pipeline 重构", "破坏性",
     "critical", "breaking", "schema change", "pipeline redesign",
     "安全漏洞", "资金", "合规", "用户数据",
+]
+
+# v4.2: 代码修改任务信号 — flash 模型禁止执行此类任务
+CODE_EDIT_SIGNALS = [
+    "write_file", "replace_text", "apply_patch", "bug fix", "fix",
+    "code edit", "refactor", "implementation",
+    "修改", "修复", "重构", "实现", "写代码", "编辑", "删除", "取消注释",
+]
+
+# v4.2: flash 模型允许的任务类型（白名单）
+FLASH_ALLOWED_SIGNALS = [
+    "summary", "总结", "summarize",
+    "classification", "分类", "classify",
+    "report", "汇报", "报告",
+    "artifact", "提取",
+    "Q&A", "问答", "question",
+    "format", "格式化",
+    "log", "日志",
 ]
 
 print_lock = threading.Lock()
@@ -1270,22 +1353,48 @@ def _resolve_route(tier_key: str) -> tuple:
     return route
 
 
+def _is_code_edit_task(task: str) -> bool:
+    """v4.2: 检测任务是否涉及代码修改。flash 模型禁止执行此类任务。"""
+    task_lower = task.lower()
+    for kw in CODE_EDIT_SIGNALS:
+        if kw.lower() in task_lower:
+            return True
+    return False
+
+
+def _is_flash_allowed(task: str) -> bool:
+    """v4.2: flash 模型仅允许用于低风险文本/分类任务。"""
+    task_lower = task.lower()
+    for kw in FLASH_ALLOWED_SIGNALS:
+        if kw.lower() in task_lower:
+            return True
+    return False
+
+
 def select_worker_model(task: str, worker_name: str,
-                         previous_failures: int = 0) -> tuple:
+                         previous_failures: int = 0,
+                         is_verifier: bool = False) -> tuple:
     """根据任务复杂度自主选择合适的模型。
 
     返回 (model, complexity_label, reason)。
 
     判断逻辑（优先级从高到低）：
-    1. 前次模型两次尝试失败 → 自动升级
-    2. 关键词匹配 → simple / complex / major
-    3. 默认 → normal
+    1. Verifier 最低 deepseek-v4-pro
+    2. 代码修改任务最低 deepseek-v4-pro（flash 禁止）
+    3. 前次模型两次尝试失败 → 自动升级
+    4. 关键词匹配 → simple / complex / major
+    5. 默认 → normal
     """
     task_lower = task.lower()
 
+    # v4.2: Verifier 最低 deepseek-v4-pro，不允许 flash
+    if is_verifier:
+        route = _resolve_route("normal")
+        return (route, "verifier",
+                f"Verifier {worker_name} 最低使用 [{route[0]}]{route[1]}，不允许 flash")
+
     # 连续失败 → 自动升级到 GPT（仅当当前不是 GPT 时）
     if previous_failures >= 2:
-        # 检查 UPGRADE_TARGET 是否可用，否则用回退
         if UPGRADE_TARGET[0] in PROVIDERS:
             route = UPGRADE_TARGET
         else:
@@ -1307,12 +1416,26 @@ def select_worker_model(task: str, worker_name: str,
         return (route, "complex",
                 f"任务复杂度高（匹配 {complex_count} 个复杂信号），启用 [complex] {route[1]}")
 
-    # 简单信号（至少 1 个，且无复杂/重大信号）
+    # v4.2: 代码修改任务 → 最低 v4-pro，flash 被禁用
+    code_edit = _is_code_edit_task(task)
+    if code_edit:
+        route = _resolve_route("normal")
+        return (route, "code_edit",
+                f"代码修改任务，flash 被禁用，最低使用 [{route[0]}]{route[1]}")
+
+    # 简单信号（至少 1 个，且无复杂/重大信号，且非代码修改）
     simple_count = sum(1 for kw in COMPLEXITY_SIGNALS_SIMPLE if kw.lower() in task_lower)
-    if simple_count >= 1 and complex_count == 0:
-        route = _resolve_route("simple")
-        return (route, "simple",
-                f"简单任务（匹配简单信号: {simple_count} 个），用低成本模型")
+    if simple_count >= 1:
+        # v4.2: flash 白名单检查
+        if _is_flash_allowed(task):
+            route = _resolve_route("simple")
+            return (route, "simple",
+                    f"简单任务（匹配简单信号: {simple_count} 个），flash 允许（白名单匹配）")
+        else:
+            # 简单信号但不在白名单 → 升级到 normal
+            route = _resolve_route("normal")
+            return (route, "normal",
+                    f"匹配简单信号但不匹配 flash 白名单，升级到 [{route[0]}]{route[1]}")
 
     # 默认
     route = _resolve_route("normal")
@@ -1974,7 +2097,8 @@ def run_worker(worker_cfg: dict, task: str, use_memory: bool = True,
                project_name: str = "",
                fresh_session: bool = False,
                session_scope: str = "",
-               disable_thinking: bool = False) -> dict:
+               disable_thinking: bool = False,
+               is_verifier: bool = False) -> dict:
     """启动一个 Worker，使用其专属工具和配置执行任务。支持多轮对话记忆。
 
     v3 升级：多厂商模型自适应 —— Worker 自主判断任务复杂度，
@@ -1989,7 +2113,7 @@ def run_worker(worker_cfg: dict, task: str, use_memory: bool = True,
     base_model = worker_cfg["model"]
 
     # ── 模型自适应：自主判断复杂度，选择厂商+模型 ──
-    (worker_provider_key, worker_model_id), complexity, model_reason = select_worker_model(task, name)
+    (worker_provider_key, worker_model_id), complexity, model_reason = select_worker_model(task, name, is_verifier=is_verifier)
     base_provider = "deepseek"  # 默认厂商
 
     if (worker_provider_key, worker_model_id) != (base_provider, base_model):
@@ -2271,19 +2395,36 @@ def _run_verifier(verifier_cfg: dict, worker_result: WorkerResult,
             f"4. 最多使用 4 个工具调用。超过后必须输出 VerificationResult JSON。"
         )
 
+    # v4.2: pass evidence to verifier
+    evidence_text = ""
+    raw_data = {}
+    try:
+        raw_data = json.loads(worker_result.raw_text) if worker_result.raw_text else {}
+    except (json.JSONDecodeError, TypeError):
+        pass
+    evidence = raw_data.get("evidence", {}) if isinstance(raw_data, dict) else {}
+    if evidence:
+        evidence_text = f"Runtime 证据: {json.dumps(evidence, ensure_ascii=False)}\n\n"
+
     prompt = (
         f"请验证以下工作产出的质量。\n\n"
         f"原始任务: {original_task}\n"
         f"Worker 状态: {worker_result.status}\n"
         f"Worker 摘要: {worker_result.summary}\n"
         f"产物列表: {json.dumps(worker_result.artifacts, ensure_ascii=False)}\n"
-        f"发现的问题: {json.dumps(worker_result.issues, ensure_ascii=False)}\n\n"
+        f"发现的问题: {json.dumps(worker_result.issues, ensure_ascii=False)}\n"
+        f"{evidence_text}"
         f"{mode_instructions}\n\n"
         "⚠️ 关键规则：\n"
         "- 不要重复读取同一个文件。读一次就够了。\n"
         "- 禁止连续两次执行相同的工具调用。\n"
         "- 读完后立即分析，不要再读。\n"
-        "- 必须在回复中输出 JSON 格式的验证结果。\n\n"
+        "- 必须在回复中输出 JSON 格式的验证结果。\n"
+        "- 【重要】如果 Worker status 是 'needs_review' 或 'partial'，不要因此自动判定失败。\n"
+        "  这只表示 Worker 被 runtime guard 终止了。你必须检查 artifacts 中列出的文件，\n"
+        "  用 read_file 看内容或用 run_command 跑测试。如果文件修改正确、测试通过 → 返回 pass。\n"
+        "- 【重要】'guard_reason'(如 noop_write/duplicate_write_blocked/write_budget_exceeded)\n"
+        "  是 runtime 的保护机制，不是 Worker 的错误。只要产物正确就返回 pass。\n\n"
         "输出格式：\n"
         '{"verdict": "pass|reject|needs_retry|needs_replan", '
         '"score": 1-5, '
@@ -2295,7 +2436,7 @@ def _run_verifier(verifier_cfg: dict, worker_result: WorkerResult,
     raw_output = ""
     try:
         raw = run_worker(verifier_cfg, prompt, use_memory=False, fresh_session=True,
-                         disable_thinking=True)
+                         disable_thinking=True, is_verifier=True)
         if not isinstance(raw, dict):
             raise TypeError(f"run_worker returned {type(raw).__name__} instead of dict")
         raw_output = raw.get("result", "")
@@ -2305,7 +2446,7 @@ def _run_verifier(verifier_cfg: dict, worker_result: WorkerResult,
         # v4.2: provider compatibility retry — disable_thinking 可能不被某些中转站支持
         try:
             raw = run_worker(verifier_cfg, prompt, use_memory=False, fresh_session=True,
-                             disable_thinking=False)
+                             disable_thinking=False, is_verifier=True)
             if isinstance(raw, dict):
                 raw_output = raw.get("result", "")
         except Exception as e2:

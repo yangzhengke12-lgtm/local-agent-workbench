@@ -7,6 +7,7 @@ Category 2: 故障注入 (thinking block / budget / blocked / resume)
 import sys
 import os
 import json
+import inspect
 import unittest
 import tempfile
 import shutil
@@ -29,6 +30,9 @@ from manager import (
     # 持久化
     _save_workflow_run, load_workflow_run, resume_workflow_run,
     PROJECT_STATE_DIR,
+    # v4.2 model routing
+    select_worker_model, _is_code_edit_task, _is_flash_allowed,
+    CODE_EDIT_SIGNALS, FLASH_ALLOWED_SIGNALS,
 )
 
 
@@ -705,6 +709,189 @@ class TestVerifierExceptionHandling(unittest.TestCase):
         )
         self.assertEqual(result.verdict, "needs_retry")
         self.assertTrue(len(result.blocking_issues) > 0)
+
+
+# ═══════════════════════════════════════════════════════════════
+# v4.2: Evidence-rich WorkerResult — verifier 能基于证据判断
+# ═══════════════════════════════════════════════════════════════
+
+class TestWorkerResultEvidence(unittest.TestCase):
+    """guard finalization 后的 WorkerResult 必须包含可验证证据。"""
+
+    def test_fallback_workerresult_has_evidence_fields(self):
+        """fallback JSON 包含 evidence.changed_files, guard_reason, write_count。"""
+        import json as _json
+        fallback = _json.dumps({
+            "status": "needs_review",
+            "summary": "Runtime guard stopped execution",
+            "artifacts": [{"path": "/tmp/test.py", "type": "write_file"}],
+            "issues": [{"severity": "medium", "description": "guard: noop_write"}],
+            "evidence": {
+                "changed_files": ["/tmp/test.py"],
+                "write_count": 2,
+                "noop_write_count": 1,
+                "guard_reason": "noop_write",
+                "first_write_succeeded": True,
+            },
+            "retryable": True,
+            "confidence": 0.5,
+        })
+        data = _json.loads(fallback)
+        self.assertEqual(data["status"], "needs_review")
+        self.assertIn("changed_files", data["evidence"])
+        self.assertIn("guard_reason", data["evidence"])
+        self.assertEqual(data["evidence"]["guard_reason"], "noop_write")
+        self.assertTrue(data["retryable"])
+
+    def test_guard_reason_in_issues(self):
+        """guard reason 出现在 issues 中作为审查信号。"""
+        result = WorkerResult(
+            status="needs_review",
+            summary="guard triggered",
+            issues=[{"severity": "medium", "description": "guard: duplicate_write_blocked"}],
+            artifacts=[{"path": "/tmp/x.py", "type": "write_file", "summary": "fixed"}],
+        )
+        self.assertEqual(result.status, "needs_review")
+        self.assertTrue(any("duplicate_write_blocked" in i.get("description", "") for i in result.issues))
+
+    def test_verifier_prompt_handles_needs_review(self):
+        """Verifier prompt 明确说明 needs_review 不自动失败。"""
+        # 验证 _run_verifier 的 prompt 包含关键指令
+        import inspect
+        src = inspect.getsource(_run_verifier)
+        self.assertIn("needs_review", src)
+        self.assertIn("guard_reason", src)
+        # 关键：不应有 "自动失败" 逻辑
+        self.assertIn("不要因此自动判定失败", src)
+
+    def test_worker_result_with_artifacts_can_pass(self):
+        """有 artifacts 的 WorkerResult → verifier 应能基于此判断 pass。"""
+        result = WorkerResult(
+            status="needs_review",
+            summary="guard stopped, but file was written",
+            artifacts=[{"path": "/tmp/fixed.py", "type": "write_file", "summary": "bug fixed"}],
+            issues=[{"severity": "medium", "description": "guard: write_budget_exceeded"}],
+            retryable=True,
+            confidence=0.5,
+        )
+        # Verifier mock: 读取文件 → 内容正确 → pass
+        vresult = _normalize_verification_result(
+            '{"verdict":"pass","score":5,"blocking_issues":[],"retry_instruction":""}'
+        )
+        self.assertEqual(vresult.verdict, "pass")
+        # Worker 状态不阻止 pass
+        self.assertEqual(result.status, "needs_review")
+
+    def test_worker_result_without_artifacts_gets_needs_retry(self):
+        """无 artifacts 的 WorkerResult → verifier 应返回 needs_retry。"""
+        result = _normalize_verification_result(
+            '{"verdict":"needs_retry","score":2,'
+            '"blocking_issues":[{"severity":"high","description":"No artifacts found"}],'
+            '"retry_instruction":"Worker must produce output files"}'
+        )
+        self.assertEqual(result.verdict, "needs_retry")
+        self.assertEqual(len(result.blocking_issues), 1)
+
+
+class TestArtifactMergePreservesJSON(unittest.TestCase):
+    """_discover_artifacts 与 JSON artifacts 合并正确。"""
+
+    def test_json_artifacts_preserved_when_log_empty(self):
+        """JSON 中的 artifacts 不被空 log 覆盖。"""
+        log: list = []
+        log_artifacts = _discover_artifacts(log)
+        structured_artifacts = [{"path": "/tmp/a.py", "type": "write_file"}]
+        # merge logic from run_worker
+        if not structured_artifacts:
+            structured_artifacts = log_artifacts
+        elif log_artifacts:
+            seen = {a.get("path", "") for a in structured_artifacts}
+            for a in log_artifacts:
+                if a.get("path", "") not in seen:
+                    structured_artifacts.append(a)
+        self.assertEqual(len(structured_artifacts), 1)
+        self.assertEqual(structured_artifacts[0]["path"], "/tmp/a.py")
+
+
+# ═══════════════════════════════════════════════════════════════
+# v4.2: Model Routing — flash 禁止执行代码修改
+# ═══════════════════════════════════════════════════════════════
+
+class TestFlashBlockedForCodeEdit(unittest.TestCase):
+    """flash 模型不能用于代码修改任务。"""
+
+    def test_code_edit_task_detected(self):
+        """含 '修复'/'write_file'/'bug fix' 的任务被识别为代码修改。"""
+        self.assertTrue(_is_code_edit_task("修复 main.py 中的 bug"))
+        self.assertTrue(_is_code_edit_task("write_file to fix the issue"))
+        self.assertTrue(_is_code_edit_task("实现新功能"))
+        self.assertTrue(_is_code_edit_task("删除第86行代码"))
+        self.assertTrue(_is_code_edit_task("取消注释 completed 字段"))
+
+    def test_non_code_edit_not_detected(self):
+        """总结/分类任务不是代码修改。"""
+        self.assertFalse(_is_code_edit_task("总结项目日志"))
+        self.assertFalse(_is_code_edit_task("分类任务复杂度"))
+        self.assertFalse(_is_code_edit_task("生成 report 草稿"))
+
+    def test_flash_allowed_for_summary(self):
+        """flash 允许用于总结/分类/报告/提取。"""
+        self.assertTrue(_is_flash_allowed("总结今天的日志"))
+        self.assertTrue(_is_flash_allowed("分类任务复杂度"))
+        self.assertTrue(_is_flash_allowed("生成项目汇报"))
+        self.assertTrue(_is_flash_allowed("提取 artifacts"))
+        self.assertTrue(_is_flash_allowed("格式化输出"))
+
+    def test_flash_not_allowed_for_bug_fix(self):
+        """flash 不允许用于 bug fix/代码修改。"""
+        self.assertFalse(_is_flash_allowed("修复 completed 字段 bug"))
+        self.assertFalse(_is_flash_allowed("修改 user.py 第86行"))
+        self.assertFalse(_is_flash_allowed("写代码实现新功能"))
+
+    def test_code_edit_task_routes_to_normal_not_simple(self):
+        """代码修改任务路由到 normal (v4-pro)，不是 simple (flash)。"""
+        task = "修复 app/user.py 中的 activated bug，删除一行代码"
+        (provider, model_id), complexity, reason = select_worker_model(task, "Alex")
+        self.assertNotEqual(model_id, "deepseek-v4-flash")
+        self.assertIn("deepseek-v4-pro", model_id)
+        self.assertIn("flash", reason.lower())  # reason 应说明 flash 被禁用
+        self.assertEqual(complexity, "code_edit")
+
+    def test_summary_task_can_use_flash(self):
+        """总结任务可以使用 flash。"""
+        task = "总结 pytest 运行日志，提取失败原因"
+        (provider, model_id), complexity, reason = select_worker_model(task, "Elena")
+        # 可能路由到 simple (flash) 或 normal，但不应该是 code_edit
+        self.assertNotEqual(complexity, "code_edit")
+
+    def test_verifier_never_uses_flash(self):
+        """Verifier 永远不使用 flash。"""
+        task = "请验证以下工作产出的质量"
+        (provider, model_id), complexity, reason = select_worker_model(
+            task, "Sophia", is_verifier=True
+        )
+        self.assertEqual(complexity, "verifier")
+        self.assertNotEqual(model_id, "deepseek-v4-flash")
+        self.assertIn("deepseek-v4-pro", model_id)
+
+    def test_nathaniel_verifier_never_uses_flash(self):
+        """Nathaniel verifier 也不使用 flash。"""
+        task = "运行 pytest 验证修复"
+        (provider, model_id), complexity, reason = select_worker_model(
+            task, "Nathaniel", is_verifier=True
+        )
+        self.assertEqual(complexity, "verifier")
+        self.assertNotEqual(model_id, "deepseek-v4-flash")
+
+    def test_failure_upgrade_still_works(self):
+        """连续失败 2 次后仍可升级到 GPT。"""
+        task = "修复 critical bug"
+        (provider, model_id), complexity, reason = select_worker_model(
+            task, "Alex", previous_failures=2
+        )
+        self.assertEqual(complexity, "complex")
+        # 升级目标
+        self.assertIn(provider, ("gpt", "dashscope"))
 
 
 if __name__ == "__main__":
