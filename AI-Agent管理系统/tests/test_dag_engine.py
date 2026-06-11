@@ -145,6 +145,28 @@ class TestPropagateBlocks(unittest.TestCase):
         self.assertEqual(changed, 0)
         self.assertEqual(nodes["B"]["status"], "todo", "B should stay todo when upstream is done")
 
+    def test_propagate_blocks_multi_dep_second_failed(self) -> None:
+        """v4.2: 节点依赖 [A, B]，A done 但 B failed — 正确传播为 blocked。"""
+        nodes = {
+            "A": {"id": "A", "name": "A", "status": "done", "depends_on": [], "assigned_worker": "Alex"},
+            "B": {"id": "B", "name": "B", "status": "failed", "depends_on": [], "assigned_worker": "Sophia"},
+            "C": {"id": "C", "name": "C", "status": "todo", "depends_on": ["A", "B"], "assigned_worker": "Nathaniel"},
+        }
+        _propagate_blocks(nodes)
+        self.assertEqual(nodes["C"]["status"], "blocked",
+                         "C depends on [A, B]; B is failed → C must be blocked")
+        self.assertEqual(nodes["A"]["status"], "done", "A should be unaffected")
+
+    def test_propagate_blocks_multi_dep_first_blocking(self) -> None:
+        """v4.2: 节点依赖 [A, B]，A blocked 时仅检查第一个 dependency 就应触发。"""
+        nodes = {
+            "A": {"id": "A", "name": "A", "status": "blocked", "depends_on": [], "assigned_worker": "Alex"},
+            "B": {"id": "B", "name": "B", "status": "done", "depends_on": [], "assigned_worker": "Sophia"},
+            "C": {"id": "C", "name": "C", "status": "todo", "depends_on": ["A", "B"], "assigned_worker": "Nathaniel"},
+        }
+        _propagate_blocks(nodes)
+        self.assertEqual(nodes["C"]["status"], "blocked")
+
 
 class TestResolveWorkerForStep(unittest.TestCase):
     """Tests for _resolve_worker_for_step — matches step to worker via assignments or keywords."""

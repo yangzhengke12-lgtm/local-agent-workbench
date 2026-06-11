@@ -1069,10 +1069,6 @@ def call_llm_multi_turn(provider_key: str, model_id: str, messages: list,
     return final_text
 
 # 复杂度判断关键词（简单启发式，Worker 用 AI 自主判断 > 关键词匹配）
-COMPLEXITY_SIGNALS_SIMPLE = [
-    "转换", "格式", "读取", "查看", "列出", "获取", "当前时间",
-    "convert", "format", "read", "list", "fetch", "get time",
-]
 COMPLEXITY_SIGNALS_COMPLEX = [
     "架构", "设计", "重构", "优化", "协调", "多模块", "跨模块", "冲突",
     "architecture", "design", "refactor", "optimize", "coordinate",
@@ -2574,7 +2570,17 @@ def delegate_with_verification(workers: dict, worker_name: str, task: str,
                     "final_status": "needs_replan",
                     "reason": "验证者判定需要重新规划",
                 }
+            case _:
+                # v4.2: 防御——merged.verdict 异常值兜底
+                return {
+                    "worker_result": asdict(worker_result),
+                    "verification": asdict(merged),
+                    "attempts": attempt_log,
+                    "final_status": "failed",
+                    "reason": f"未知判决: {merged.verdict}",
+                }
 
+    # 循环耗尽兜底（v4.2: 不应到达此处，match 已全覆盖）
     return {
         "worker_result": asdict(worker_result),
         "verification": None,
@@ -2649,7 +2655,10 @@ def _propagate_blocks(nodes: dict[str, dict]) -> int:
         if status in ("done", "running", "retrying", "verifying"):
             continue
         deps = ndata.get("depends_on", []) if isinstance(ndata, dict) else getattr(ndata, "depends_on", [])
+        # v4.2 fix: 检查所有依赖，任一 blocking 即标记（之前的 break 只检查第一个）
         for dep in deps:
+            if dep not in nodes:
+                continue
             dep_node = nodes[dep]
             dep_status = dep_node.get("status", "todo") if isinstance(dep_node, dict) else getattr(dep_node, "status", "todo")
             if dep_status in ("failed", "blocked", "needs_replan"):
@@ -2659,7 +2668,7 @@ def _propagate_blocks(nodes: dict[str, dict]) -> int:
                     else:
                         ndata.status = "blocked"
                     changed += 1
-            break  # one blocking dep is enough
+                break  # 找到一个 blocking dep 就够了
     return changed
 
 
