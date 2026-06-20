@@ -77,6 +77,15 @@ select {
   cursor: pointer;
 }
 
+select {
+  color-scheme: dark;
+}
+
+select option {
+  background: var(--surface);
+  color: var(--text);
+}
+
 #app {
   width: 100vw;
   height: 100vh;
@@ -590,6 +599,7 @@ kbd {
 
 .footer-link:hover {
   color: var(--accent-2);
+  background: var(--surface);
 }
 
 #center-panel {
@@ -769,6 +779,11 @@ kbd {
   font-size: 15px;
 }
 
+.inspector-tabs button:hover {
+  color: var(--text);
+  background: var(--surface-2);
+}
+
 .inspector-tabs button.active {
   color: var(--text);
   background: var(--surface);
@@ -905,7 +920,6 @@ kbd {
   height: 46px;
   border: 1px solid transparent;
   border-radius: 10px;
-  background: transparent;
   color: var(--text);
   outline: none;
   font-size: 14px;
@@ -914,6 +928,7 @@ kbd {
 #task-description {
   min-width: 0;
   padding: 0 10px;
+  background: transparent;
 }
 
 #task-description:focus,
@@ -927,10 +942,15 @@ kbd {
 #task-worker {
   padding: 0 10px;
   border-color: var(--border);
+  background: color-mix(in srgb, var(--surface-2), black 8%);
+  color: var(--text);
+  font-weight: 700;
 }
 
 #task-worker:disabled {
-  color: var(--muted);
+  color: var(--text-2);
+  opacity: 0.72;
+  cursor: not-allowed;
 }
 
 #create-task-btn {
@@ -957,6 +977,43 @@ kbd {
 
 #connection-status.disconnected {
   color: var(--yellow);
+}
+
+#toast {
+  position: fixed;
+  right: 22px;
+  bottom: 48px;
+  z-index: 20;
+  max-width: min(420px, calc(100vw - 44px));
+  padding: 11px 14px;
+  border: 1px solid color-mix(in srgb, var(--accent), transparent 35%);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--surface-2), black 10%);
+  color: var(--text);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35);
+  font-size: 13px;
+  font-weight: 700;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(8px);
+  transition: opacity 160ms ease, transform 160ms ease;
+}
+
+#toast.show {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+body.rail-collapsed #app {
+  grid-template-columns: 0 minmax(480px, 1fr) 400px;
+}
+
+body.rail-collapsed #left-panel {
+  display: none;
+}
+
+body.rail-collapsed .rail-toggle {
+  background: var(--surface-2);
 }
 
 ::-webkit-scrollbar {

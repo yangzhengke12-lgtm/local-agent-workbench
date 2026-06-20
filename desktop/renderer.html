@@ -11,7 +11,7 @@
   <div id="app">
     <div id="titlebar">
       <div class="title-left">
-        <button class="icon-button rail-toggle" aria-label="Toggle sidebar"></button>
+        <button class="icon-button rail-toggle" id="rail-toggle" aria-label="Toggle sidebar"></button>
         <span class="brand-mark"></span>
         <div class="brand-copy">
           <span class="brand-name">Agent Workbench</span>
@@ -30,7 +30,7 @@
           <option value="zh">中文</option>
           <option value="en">English</option>
         </select>
-        <button class="icon-button more-button" aria-label="More"></button>
+        <button class="icon-button more-button" id="more-button" aria-label="More"></button>
         <div class="window-controls" aria-label="Window controls">
           <button class="window-btn" id="window-minimize" title="Minimize" aria-label="Minimize"></button>
           <button class="window-btn" id="window-maximize" title="Maximize" aria-label="Maximize"></button>
@@ -51,7 +51,7 @@
     <aside id="left-panel">
       <div class="sidebar-actions">
         <button id="quick-new-task" class="new-session-btn">+ 新任务 <span>Ctrl N</span></button>
-        <button class="history-btn" title="History"></button>
+        <button class="history-btn" id="history-refresh-btn" title="History"></button>
       </div>
 
       <div class="search-box">
@@ -82,9 +82,9 @@
       </div>
 
       <div class="sidebar-footer">
-        <button class="footer-link">审批规则</button>
-        <button class="footer-link">关于</button>
-        <button class="footer-link">设置 <kbd>Ctrl ,</kbd></button>
+        <button class="footer-link" data-action="policy">审批规则</button>
+        <button class="footer-link" data-action="about">关于</button>
+        <button class="footer-link" data-action="settings">设置 <kbd>Ctrl ,</kbd></button>
       </div>
     </aside>
 
@@ -99,8 +99,8 @@
           </div>
         </div>
         <div class="conversation-actions">
-          <button>复制</button>
-          <button>导出</button>
+          <button id="copy-task-btn">复制</button>
+          <button id="export-task-btn">导出</button>
           <button id="header-new-task">+ 新任务</button>
         </div>
       </div>
@@ -118,10 +118,10 @@
 
     <aside id="right-panel">
       <div class="inspector-tabs">
-        <button class="active">文件</button>
-        <button>工具</button>
-        <button>记忆</button>
-        <button>规则</button>
+        <button class="active" data-inspector-tab="files">文件</button>
+        <button data-inspector-tab="tools">工具</button>
+        <button data-inspector-tab="memory">记忆</button>
+        <button data-inspector-tab="rules">规则</button>
       </div>
       <div class="context-meter">
         <div class="meter-label">
@@ -167,6 +167,7 @@
       <span>任务 <strong id="status-task-count">0</strong></span>
       <span id="status-theme">Graphite</span>
     </div>
+    <div id="toast" role="status" aria-live="polite"></div>
   </div>
 
   <script src="i18n.js"></script>

@@ -14,6 +14,7 @@ var state = {
   _wsPath: null,
   _connStatus: 'disconnected',
   _theme: localStorage.getItem('workbench_theme') || 'graphite',
+  _taskQuery: '',
 };
 
 // ═══════════════════════════════════════════════════════
@@ -142,6 +143,24 @@ async function setWorkspace() {
     return;
   }
   renderWorkspace(result.workspace);
+  showToast('Workspace updated');
+}
+
+async function chooseWorkspaceDirectory() {
+  var input = document.getElementById('workspace-input');
+  var path = '';
+  if (window.workbench && window.workbench.selectWorkspaceDirectory) {
+    path = await window.workbench.selectWorkspaceDirectory();
+  }
+  if (!path && input) {
+    path = input.value.trim();
+  }
+  if (!path) {
+    showToast('No workspace selected');
+    return;
+  }
+  if (input) { input.value = path; }
+  await setWorkspace();
 }
 
 // ═══════════════════════════════════════════════════════
@@ -186,15 +205,32 @@ function renderTaskList() {
   var container = document.getElementById('task-list');
   var count = document.getElementById('task-count');
   var statusCount = document.getElementById('status-task-count');
+  var visibleTaskIds = [];
+  var query = (state._taskQuery || '').toLowerCase();
+  for (var j = 0; j < state.taskOrder.length; j++) {
+    var id = state.taskOrder[j];
+    var item = state.tasks[id];
+    if (!item) continue;
+    var haystack = [
+      item.description || '',
+      item.task_id || '',
+      item.worker_name || '',
+      item.type || '',
+      item.status || '',
+    ].join(' ').toLowerCase();
+    if (!query || haystack.indexOf(query) >= 0) {
+      visibleTaskIds.push(id);
+    }
+  }
   if (count) { count.textContent = String(state.taskOrder.length); }
   if (statusCount) { statusCount.textContent = String(state.taskOrder.length); }
-  if (state.taskOrder.length === 0) {
-    container.innerHTML = '<div class="task-list-empty">' + t('task.empty') + '</div>';
+  if (visibleTaskIds.length === 0) {
+    container.innerHTML = '<div class="task-list-empty">' + (query ? 'No matching tasks' : t('task.empty')) + '</div>';
     return;
   }
   var html = '';
-  for (var i = 0; i < state.taskOrder.length; i++) {
-    var taskId = state.taskOrder[i];
+  for (var i = 0; i < visibleTaskIds.length; i++) {
+    var taskId = visibleTaskIds[i];
     var task = state.tasks[taskId];
     if (!task) continue;
     var selectedClass = (taskId === state.selectedTaskId) ? ' selected' : '';
@@ -434,6 +470,128 @@ function applyTheme(theme) {
   }
 }
 
+function showToast(message) {
+  var toast = document.getElementById('toast');
+  if (!toast) return;
+  toast.textContent = message;
+  toast.className = 'show';
+  clearTimeout(showToast._timer);
+  showToast._timer = setTimeout(function () {
+    toast.className = '';
+  }, 2200);
+}
+
+async function copySelectedTask() {
+  var task = state.selectedTaskId ? state.tasks[state.selectedTaskId] : null;
+  if (!task) {
+    showToast('Select a task first');
+    return;
+  }
+  var text = task.result || (task.logs || []).join('\n') || task.description || '';
+  if (!text) {
+    showToast('Nothing to copy');
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+    showToast('Copied task output');
+  } catch (err) {
+    showToast('Copy failed');
+  }
+}
+
+function exportSelectedTask() {
+  var task = state.selectedTaskId ? state.tasks[state.selectedTaskId] : null;
+  if (!task) {
+    showToast('Select a task first');
+    return;
+  }
+  var blob = new Blob([JSON.stringify(task, null, 2)], { type: 'application/json' });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url;
+  a.download = 'agent-task-' + task.task_id + '.json';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  showToast('Exported task JSON');
+}
+
+function switchInspectorTab(button) {
+  var buttons = document.querySelectorAll('.inspector-tabs button');
+  for (var i = 0; i < buttons.length; i++) {
+    buttons[i].classList.remove('active');
+  }
+  button.classList.add('active');
+  var tab = button.getAttribute('data-inspector-tab');
+  var messages = {
+    files: 'Showing task result and artifacts',
+    tools: 'Tool traces are shown in execution logs',
+    memory: 'Memory view is not connected yet',
+    rules: 'Rules are controlled by worker tool permissions',
+  };
+  showToast(messages[tab] || 'Inspector updated');
+}
+
+function handleFooterAction(action) {
+  var messages = {
+    policy: 'Approval gates are planned for high-risk tools',
+    about: 'Local Agent Workbench - local-first multi-agent task runtime',
+    settings: 'Use the top-right theme and language controls for now',
+  };
+  showToast(messages[action] || 'Not available yet');
+}
+
+function startNewTask() {
+  state.selectedTaskId = null;
+  renderTaskList();
+  var detail = document.getElementById('task-detail-header');
+  var progress = document.getElementById('task-progress');
+  var logs = document.getElementById('log-stream');
+  var logCount = document.getElementById('log-count');
+  var result = document.getElementById('result-content');
+  var artifacts = document.getElementById('artifacts-content');
+  if (detail) { detail.innerHTML = '<div class="placeholder">' + t('task.select_hint') + '</div>'; }
+  if (progress) { progress.innerHTML = ''; }
+  if (logs) { logs.innerHTML = '<div class="placeholder">' + t('log.waiting') + '</div>'; }
+  if (logCount) { logCount.textContent = '0'; }
+  if (result) {
+    result.className = 'placeholder';
+    result.innerHTML = '<span class="placeholder">' + t('result.empty') + '</span>';
+  }
+  if (artifacts) {
+    artifacts.className = 'placeholder';
+    artifacts.innerHTML = '<span class="placeholder">' + t('artifacts.empty') + '</span>';
+  }
+  var input = document.getElementById('task-description');
+  if (input) {
+    input.value = '';
+    input.focus();
+  }
+  showToast('Ready for a new task');
+}
+
+function handleGlobalShortcut(e) {
+  if (!(e.ctrlKey || e.metaKey)) return;
+  var key = String(e.key || '').toLowerCase();
+  if (key === 'n') {
+    e.preventDefault();
+    startNewTask();
+  } else if (key === 'k') {
+    e.preventDefault();
+    var search = document.getElementById('task-search');
+    if (search) {
+      search.focus();
+      search.select();
+      showToast('Search tasks');
+    }
+  } else if (key === ',') {
+    e.preventDefault();
+    handleFooterAction('settings');
+  }
+}
+
 // ═══════════════════════════════════════════════════════
 // Section 9: Init
 // ═══════════════════════════════════════════════════════
@@ -458,22 +616,57 @@ function init() {
     }
   }
 
-  document.getElementById('workspace-set-btn').addEventListener('click', setWorkspace);
+  document.getElementById('workspace-set-btn').addEventListener('click', chooseWorkspaceDirectory);
   document.getElementById('create-task-btn').addEventListener('click', createTask);
   var themeSelect = document.getElementById('theme-select');
   if (themeSelect) {
     themeSelect.addEventListener('change', function () { applyTheme(themeSelect.value); });
   }
+  var railToggle = document.getElementById('rail-toggle');
+  if (railToggle) {
+    railToggle.addEventListener('click', function () {
+      document.body.classList.toggle('rail-collapsed');
+      showToast(document.body.classList.contains('rail-collapsed') ? 'Sidebar collapsed' : 'Sidebar expanded');
+    });
+  }
+  var moreButton = document.getElementById('more-button');
+  if (moreButton) {
+    moreButton.addEventListener('click', function () { showToast('More actions are not configured yet'); });
+  }
+  var historyRefresh = document.getElementById('history-refresh-btn');
+  if (historyRefresh) {
+    historyRefresh.addEventListener('click', async function () {
+      await loadTasks();
+      showToast('Task list refreshed');
+    });
+  }
   var quickNew = document.getElementById('quick-new-task');
   var headerNew = document.getElementById('header-new-task');
   var tabNew = document.getElementById('new-task-btn');
-  function focusComposer() {
-    var input = document.getElementById('task-description');
-    if (input) { input.focus(); }
+  if (quickNew) { quickNew.addEventListener('click', startNewTask); }
+  if (headerNew) { headerNew.addEventListener('click', startNewTask); }
+  if (tabNew) { tabNew.addEventListener('click', startNewTask); }
+  var taskSearch = document.getElementById('task-search');
+  if (taskSearch) {
+    taskSearch.addEventListener('input', function () {
+      state._taskQuery = taskSearch.value.trim();
+      renderTaskList();
+    });
   }
-  if (quickNew) { quickNew.addEventListener('click', focusComposer); }
-  if (headerNew) { headerNew.addEventListener('click', focusComposer); }
-  if (tabNew) { tabNew.addEventListener('click', focusComposer); }
+  var copyButton = document.getElementById('copy-task-btn');
+  var exportButton = document.getElementById('export-task-btn');
+  if (copyButton) { copyButton.addEventListener('click', copySelectedTask); }
+  if (exportButton) { exportButton.addEventListener('click', exportSelectedTask); }
+  var inspectorButtons = document.querySelectorAll('.inspector-tabs button');
+  for (var i = 0; i < inspectorButtons.length; i++) {
+    inspectorButtons[i].addEventListener('click', function () { switchInspectorTab(this); });
+  }
+  var footerButtons = document.querySelectorAll('.footer-link');
+  for (var k = 0; k < footerButtons.length; k++) {
+    footerButtons[k].addEventListener('click', function () {
+      handleFooterAction(this.getAttribute('data-action'));
+    });
+  }
   document.getElementById('task-type').addEventListener('change', updateWorkerAvailability);
   document.getElementById('task-description').addEventListener('keydown', function (e) {
     if (e.key === 'Enter') createTask();
@@ -481,6 +674,7 @@ function init() {
   document.getElementById('workspace-input').addEventListener('keydown', function (e) {
     if (e.key === 'Enter') setWorkspace();
   });
+  document.addEventListener('keydown', handleGlobalShortcut);
 
   loadWorkspace();
   loadWorkers();
