@@ -23,6 +23,8 @@ var state = {
   _taskEvents: {},
   _memory: null,
   _rules: null,
+  _tokenBudget: 32000,
+  _estimatedTokens: 0,
 };
 
 // ═══════════════════════════════════════════════════════
@@ -138,6 +140,7 @@ function renderWorkspace(wsPath) {
     display.className = '';
     if (tabName) { tabName.textContent = 'my-agent'; }
   }
+  updateContextMeter();
 }
 
 async function setWorkspace() {
@@ -260,6 +263,7 @@ function renderTaskList() {
     html += '</div>';
   }
   container.innerHTML = html;
+  updateContextMeter();
 }
 
 function selectTask(taskId) {
@@ -337,6 +341,7 @@ function renderTaskDetail(task) {
   } else {
     progress.innerHTML = '';
   }
+  updateContextMeter();
 }
 
 function renderLogs(task) {
@@ -362,6 +367,7 @@ function renderLogs(task) {
   }
   container.innerHTML = html;
   container.scrollTop = container.scrollHeight;
+  updateContextMeter();
 }
 
 function renderResult(task) {
@@ -396,6 +402,7 @@ async function previewWorkspaceFile(path) {
   state._inspectorTab = 'files';
   setInspectorActiveTab();
   renderInspector();
+  updateContextMeter();
 }
 
 async function loadTaskEvents(taskId) {
@@ -435,6 +442,7 @@ function renderInspector() {
   } else {
     container.innerHTML = renderRulesPanel();
   }
+  updateContextMeter();
 }
 
 function renderFilesPanel() {
@@ -693,12 +701,75 @@ function formatBytes(bytes) {
   return (value / 1024 / 1024).toFixed(1) + ' MB';
 }
 
+function estimateTokens(text) {
+  var value = String(text || '').trim();
+  if (!value) return 0;
+  var asciiWords = (value.match(/[A-Za-z0-9_]+/g) || []).length;
+  var cjkChars = (value.match(/[\u3400-\u9fff]/g) || []).length;
+  var punctuation = Math.ceil((value.length - asciiWords - cjkChars) / 8);
+  return Math.max(1, Math.ceil(asciiWords * 1.25 + cjkChars * 1.05 + punctuation));
+}
+
+function estimateCurrentContextTokens() {
+  var parts = [];
+  if (state._wsPath) parts.push(state._wsPath);
+  if (state.selectedTaskId && state.tasks[state.selectedTaskId]) {
+    var task = state.tasks[state.selectedTaskId];
+    parts.push(task.description || '');
+    parts.push(task.progress || '');
+    parts.push((task.logs || []).slice(-80).join('\n'));
+    parts.push(task.result || '');
+    parts.push(JSON.stringify(task.artifacts || []));
+  }
+  if (state._filePreview && state._filePreview.previewable) {
+    parts.push(state._filePreview.relative_path || '');
+    parts.push(state._filePreview.content || '');
+  }
+  if (state._inspectorTab === 'tools' && state.selectedTaskId) {
+    parts.push(JSON.stringify(state._taskEvents[state.selectedTaskId] || []));
+  }
+  if (state._inspectorTab === 'memory' && state._memory) {
+    parts.push(JSON.stringify(state._memory));
+  }
+  if (state._inspectorTab === 'rules' && state._rules) {
+    parts.push(JSON.stringify(state._rules));
+  }
+  return estimateTokens(parts.join('\n'));
+}
+
+function updateContextMeter() {
+  var tokens = estimateCurrentContextTokens();
+  state._estimatedTokens = tokens;
+  var budget = state._tokenBudget;
+  var pct = Math.min(100, Math.round(tokens / budget * 100));
+  var value = document.getElementById('context-token-value');
+  var fill = document.getElementById('context-token-fill');
+  var percent = document.getElementById('context-token-percent');
+  var source = document.getElementById('context-token-source');
+  var status = document.getElementById('status-token-count');
+  if (value) value.textContent = formatTokenCount(tokens) + ' / 32k';
+  if (fill) fill.style.width = Math.max(2, pct) + '%';
+  if (percent) percent.textContent = pct + '%';
+  if (source) source.textContent = state.selectedTaskId ? 'est. selected task context' : 'est. workspace context';
+  if (status) status.textContent = 'tokens ' + formatTokenCount(tokens);
+}
+
+function formatTokenCount(value) {
+  if (value >= 1000) return (value / 1000).toFixed(value >= 10000 ? 0 : 1) + 'k';
+  return String(value);
+}
+
 function setInspectorActiveTab() {
   var buttons = document.querySelectorAll('.inspector-tabs button');
   for (var i = 0; i < buttons.length; i++) {
     var tab = buttons[i].getAttribute('data-inspector-tab');
     buttons[i].classList.toggle('active', tab === state._inspectorTab);
   }
+}
+
+function setRailCollapsed(collapsed) {
+  document.body.classList.toggle('rail-collapsed', collapsed);
+  localStorage.setItem('workbench_rail_collapsed', collapsed ? '1' : '0');
 }
 
 function setConnectionStatus(status) {
@@ -870,6 +941,7 @@ function handleInspectorClick(e) {
 function init() {
   // Apply initial translations
   applyTheme(state._theme);
+  setRailCollapsed(localStorage.getItem('workbench_rail_collapsed') === '1');
   refreshAllUI();
 
   var minimizeBtn = document.getElementById('window-minimize');
@@ -896,7 +968,7 @@ function init() {
   var railToggle = document.getElementById('rail-toggle');
   if (railToggle) {
     railToggle.addEventListener('click', function () {
-      document.body.classList.toggle('rail-collapsed');
+      setRailCollapsed(!document.body.classList.contains('rail-collapsed'));
       showToast(document.body.classList.contains('rail-collapsed') ? 'Sidebar collapsed' : 'Sidebar expanded');
     });
   }
@@ -960,6 +1032,7 @@ function init() {
   loadRules();
   loadMemory();
   renderInspector();
+  updateContextMeter();
   connectWs();
 
   state.refreshTimer = setInterval(function () { loadTasks(); }, 10000);

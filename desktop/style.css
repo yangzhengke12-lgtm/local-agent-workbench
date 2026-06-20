@@ -25,6 +25,10 @@
   --blue: #58a6ff;
   --font: "Geist", -apple-system, BlinkMacSystemFont, "Microsoft YaHei", "Segoe UI", sans-serif;
   --mono: "Cascadia Mono", "Consolas", "Courier New", monospace;
+  --left-width: 304px;
+  --left-collapsed-width: 58px;
+  --right-width: 400px;
+  --motion: 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 :root[data-theme="blue"] {
@@ -90,7 +94,7 @@ select option {
   width: 100vw;
   height: 100vh;
   display: grid;
-  grid-template-columns: 304px minmax(480px, 1fr) 400px;
+  grid-template-columns: var(--left-width) minmax(480px, 1fr) var(--right-width);
   grid-template-rows: 42px 46px minmax(0, 1fr) 188px;
   grid-template-areas:
     "title title title"
@@ -98,6 +102,7 @@ select option {
     "left center right"
     "status composer right";
   background: var(--bg);
+  transition: grid-template-columns var(--motion);
 }
 
 #titlebar {
@@ -149,6 +154,7 @@ select option {
   inset: 8px 9px;
   border-left: 2px solid var(--accent);
   border-right: 2px solid var(--accent);
+  transition: transform var(--motion), border-color var(--motion);
 }
 
 .more-button::before {
@@ -325,6 +331,8 @@ select option {
   flex-direction: column;
   border-right: 1px solid var(--border);
   background: var(--chrome);
+  overflow: hidden;
+  transition: background var(--motion), border-color var(--motion);
 }
 
 .sidebar-actions {
@@ -332,6 +340,7 @@ select option {
   grid-template-columns: minmax(0, 1fr) 42px;
   gap: 8px;
   padding: 12px;
+  transition: grid-template-columns var(--motion), gap var(--motion), padding var(--motion);
 }
 
 .new-session-btn {
@@ -342,6 +351,9 @@ select option {
   color: #fff;
   font-size: 15px;
   font-weight: 800;
+  overflow: hidden;
+  white-space: nowrap;
+  transition: width var(--motion), padding var(--motion), font-size var(--motion), border-radius var(--motion);
 }
 
 .new-session-btn span {
@@ -349,6 +361,7 @@ select option {
   padding: 2px 6px;
   border-radius: 4px;
   background: rgba(255, 255, 255, 0.18);
+  transition: opacity var(--motion);
 }
 
 .history-btn {
@@ -379,6 +392,8 @@ select option {
   border: 1px solid var(--border);
   border-radius: 7px;
   background: var(--surface);
+  overflow: hidden;
+  transition: grid-template-columns var(--motion), margin var(--motion), padding var(--motion), width var(--motion);
 }
 
 .search-icon::before {
@@ -397,6 +412,7 @@ select option {
   color: var(--text);
   outline: none;
   font-size: 13px;
+  transition: opacity var(--motion), font-size var(--motion);
 }
 
 kbd {
@@ -412,11 +428,13 @@ kbd {
   color: var(--text-2);
   font-size: 12px;
   font-family: var(--font);
+  transition: opacity var(--motion);
 }
 
 #workspace-section {
   border-top: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
+  transition: opacity var(--motion), transform var(--motion);
 }
 
 .panel-title {
@@ -497,6 +515,7 @@ kbd {
   flex: 1;
   display: flex;
   flex-direction: column;
+  transition: opacity var(--motion), transform var(--motion);
 }
 
 #task-list {
@@ -583,6 +602,7 @@ kbd {
 .sidebar-footer {
   padding: 12px 14px;
   border-top: 1px solid var(--border);
+  transition: opacity var(--motion), transform var(--motion), padding var(--motion);
 }
 
 .footer-link {
@@ -617,6 +637,7 @@ kbd {
   gap: 20px;
   padding: 18px 24px;
   border-bottom: 1px solid var(--border);
+  transition: padding var(--motion), min-height var(--motion);
 }
 
 .conversation-title {
@@ -722,6 +743,7 @@ kbd {
   font-family: var(--font);
   font-size: 15px;
   line-height: 1.7;
+  transition: padding var(--motion), font-size var(--motion);
 }
 
 #log-stream .placeholder {
@@ -798,12 +820,16 @@ kbd {
 .meter-label {
   display: flex;
   justify-content: space-between;
+  gap: 12px;
   color: var(--text-2);
   font-size: 13px;
 }
 
 .meter-label strong {
   color: var(--text);
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  font-size: 12px;
 }
 
 .meter-track {
@@ -819,6 +845,22 @@ kbd {
   width: 18%;
   height: 100%;
   background: var(--accent);
+  transition: width var(--motion);
+}
+
+.meter-subline {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.meter-subline span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 #inspector-content {
@@ -1240,6 +1282,7 @@ kbd {
   background: var(--chrome);
   color: var(--text-2);
   font-size: 13px;
+  transition: padding var(--motion), font-size var(--motion);
 }
 
 #connection-status {
@@ -1276,15 +1319,83 @@ kbd {
 }
 
 body.rail-collapsed #app {
-  grid-template-columns: 0 minmax(480px, 1fr) 400px;
+  grid-template-columns: var(--left-collapsed-width) minmax(520px, 1fr) var(--right-width);
 }
 
 body.rail-collapsed #left-panel {
-  display: none;
+  background: var(--chrome-2);
 }
 
 body.rail-collapsed .rail-toggle {
   background: var(--surface-2);
+}
+
+body.rail-collapsed .rail-toggle::before {
+  transform: rotate(90deg) scaleX(0.85);
+}
+
+body.rail-collapsed .sidebar-actions {
+  grid-template-columns: 34px;
+  gap: 8px;
+  padding: 10px 11px;
+}
+
+body.rail-collapsed .new-session-btn {
+  width: 34px;
+  padding: 0;
+  border-radius: 9px;
+  font-size: 0;
+}
+
+body.rail-collapsed .new-session-btn::before {
+  content: "+";
+  font-size: 18px;
+  line-height: 1;
+}
+
+body.rail-collapsed .new-session-btn span,
+body.rail-collapsed .search-box input,
+body.rail-collapsed .search-box kbd,
+body.rail-collapsed #workspace-section,
+body.rail-collapsed #task-list-section,
+body.rail-collapsed .sidebar-footer {
+  opacity: 0;
+  pointer-events: none;
+}
+
+body.rail-collapsed .history-btn {
+  width: 34px;
+  height: 34px;
+}
+
+body.rail-collapsed .search-box {
+  grid-template-columns: 18px;
+  width: 34px;
+  height: 34px;
+  margin: 0 11px 10px;
+  padding: 0 8px;
+}
+
+body.rail-collapsed #workspace-section,
+body.rail-collapsed #task-list-section,
+body.rail-collapsed .sidebar-footer {
+  transform: translateX(-12px);
+}
+
+body.rail-collapsed .conversation-header {
+  min-height: 78px;
+  padding: 16px 22px;
+}
+
+body.rail-collapsed #log-stream {
+  padding-left: clamp(36px, 9vw, 150px);
+  padding-right: clamp(36px, 9vw, 150px);
+  font-size: 14px;
+}
+
+body.rail-collapsed #statusbar {
+  padding-left: 14px;
+  font-size: 12px;
 }
 
 ::-webkit-scrollbar {
@@ -1305,7 +1416,9 @@ body.rail-collapsed .rail-toggle {
 
 @media (max-width: 1180px) {
   #app {
-    grid-template-columns: 270px minmax(380px, 1fr) 320px;
+    --left-width: 270px;
+    --right-width: 320px;
+    grid-template-columns: var(--left-width) minmax(380px, 1fr) var(--right-width);
   }
 
   .composer-row {

@@ -125,10 +125,14 @@
       </div>
       <div class="context-meter">
         <div class="meter-label">
-          <span>上下文 · TOKENS</span>
-          <strong>local</strong>
+          <span id="context-token-label">上下文 · TOKENS</span>
+          <strong id="context-token-value">0 / 32k</strong>
         </div>
-        <div class="meter-track"><span></span></div>
+        <div class="meter-track"><span id="context-token-fill"></span></div>
+        <div class="meter-subline">
+          <span id="context-token-source">est. local context</span>
+          <span id="context-token-percent">0%</span>
+        </div>
       </div>
       <div id="inspector-content">
         <div class="placeholder">正在加载工作台上下文...</div>
@@ -158,7 +162,7 @@
 
     <div id="statusbar">
       <span id="connection-status" data-i18n="app.connecting">连接中...</span>
-      <span>tokens 0</span>
+      <span id="status-token-count">tokens 0</span>
       <span>任务 <strong id="status-task-count">0</strong></span>
       <span id="status-theme">Graphite</span>
     </div>
