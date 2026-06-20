@@ -420,6 +420,21 @@ function init() {
   // Apply initial translations
   refreshAllUI();
 
+  var minimizeBtn = document.getElementById('window-minimize');
+  var maximizeBtn = document.getElementById('window-maximize');
+  var closeBtn = document.getElementById('window-close');
+  if (window.workbench) {
+    if (minimizeBtn && window.workbench.minimizeWindow) {
+      minimizeBtn.addEventListener('click', function () { window.workbench.minimizeWindow(); });
+    }
+    if (maximizeBtn && window.workbench.toggleMaximizeWindow) {
+      maximizeBtn.addEventListener('click', function () { window.workbench.toggleMaximizeWindow(); });
+    }
+    if (closeBtn && window.workbench.closeWindow) {
+      closeBtn.addEventListener('click', function () { window.workbench.closeWindow(); });
+    }
+  }
+
   document.getElementById('workspace-set-btn').addEventListener('click', setWorkspace);
   document.getElementById('create-task-btn').addEventListener('click', createTask);
   document.getElementById('task-type').addEventListener('change', updateWorkerAvailability);

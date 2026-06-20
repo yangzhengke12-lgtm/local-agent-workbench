@@ -178,6 +178,8 @@ function createWindow() {
     minWidth: 1024,
     minHeight: 700,
     title: 'Agent Desktop Workbench',
+    frame: false,
+    backgroundColor: '#0f141b',
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -249,4 +251,26 @@ ipcMain.handle('workspace:select-directory', async () => {
     return null;
   }
   return result.filePaths[0];
+});
+
+ipcMain.handle('window:minimize', () => {
+  if (mainWindow) {
+    mainWindow.minimize();
+  }
+});
+
+ipcMain.handle('window:toggle-maximize', () => {
+  if (!mainWindow) return false;
+  if (mainWindow.isMaximized()) {
+    mainWindow.unmaximize();
+    return false;
+  }
+  mainWindow.maximize();
+  return true;
+});
+
+ipcMain.handle('window:close', () => {
+  if (mainWindow) {
+    mainWindow.close();
+  }
 });
