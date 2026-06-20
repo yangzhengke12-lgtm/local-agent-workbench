@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline'; connect-src http://localhost:8000 ws://localhost:8000; font-src 'self' data:;">
+  <title>Agent Desktop Workbench</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Header -->
+    <div id="header">
+      <div class="brand-block">
+        <span class="brand-mark">A</span>
+        <div>
+          <div class="header-title" data-i18n="app.title">Agent Desktop 工作台</div>
+          <div class="header-subtitle">Local Agent Runtime</div>
+        </div>
+      </div>
+      <div class="header-right">
+        <select id="lang-select" onchange="setLang(this.value)">
+          <option value="zh">中文</option>
+          <option value="en">English</option>
+        </select>
+        <span id="connection-status" data-i18n="app.connecting">连接中...</span>
+      </div>
+    </div>
+
+    <!-- Left Panel -->
+    <div id="left-panel">
+      <div id="workspace-section">
+        <div class="panel-title">
+          <span data-i18n="workspace.title">工作区</span>
+        </div>
+        <div id="workspace-display" data-i18n="workspace.not_set">未设置</div>
+        <div class="workspace-actions">
+          <input type="text" id="workspace-input" data-i18n="workspace.placeholder" placeholder="输入项目路径...">
+          <button id="workspace-set-btn" data-i18n="workspace.set_btn">设置</button>
+        </div>
+      </div>
+      <div id="task-list-section">
+        <div class="panel-title split-title">
+          <span data-i18n="task.title">任务列表</span>
+          <span id="task-count">0</span>
+        </div>
+        <div id="task-list">
+          <div class="task-list-empty" data-i18n="task.empty">暂无任务</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Center Panel -->
+    <div id="center-panel">
+      <div id="task-detail-section">
+        <div id="task-detail-header">
+          <div class="placeholder" data-i18n="task.select_hint">选择一个任务查看详情</div>
+        </div>
+        <div id="task-progress"></div>
+      </div>
+      <div id="log-section">
+        <div class="panel-title split-title">
+          <span data-i18n="log.title">执行日志</span>
+          <span id="log-count">0</span>
+        </div>
+        <div id="log-stream">
+          <div class="placeholder" data-i18n="log.waiting">等待执行...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right Panel -->
+    <div id="right-panel">
+      <div id="result-section">
+        <div class="panel-title" data-i18n="result.title">结果</div>
+        <div id="result-content" class="placeholder" data-i18n="result.empty">暂无结果</div>
+      </div>
+      <div id="artifacts-section">
+        <div class="panel-title" data-i18n="artifacts.title">产出文件</div>
+        <div id="artifacts-content" class="placeholder" data-i18n="artifacts.empty">暂无产出</div>
+      </div>
+    </div>
+
+    <!-- Bottom Bar -->
+    <div id="bottom-bar">
+      <div class="command-input-wrap">
+        <input type="text" id="task-description" data-i18n="task.desc_placeholder" placeholder="输入任务描述..." autofocus>
+      </div>
+      <div class="command-controls">
+        <select id="task-type">
+          <option value="worker_task" data-i18n="task.type.worker">Worker 任务</option>
+          <option value="verified_task" data-i18n="task.type.verified">验证任务</option>
+          <option value="project_pipeline_task" data-i18n="task.type.pipeline">Pipeline</option>
+        </select>
+        <select id="task-worker"></select>
+        <button id="create-task-btn" class="btn-primary" data-i18n="task.create_btn">创建任务</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="i18n.js"></script>
+  <script src="renderer.js"></script>
+</body>
+</html>

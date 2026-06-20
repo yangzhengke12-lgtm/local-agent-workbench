@@ -1,0 +1,432 @@
+"""Agent Task API 测试 —— HTTP 接口 + 数据模型 + 验证逻辑。"""
+import os
+import sys
+import unittest
+from unittest.mock import patch, MagicMock
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+os.environ.setdefault("ANTHROPIC_API_KEY", "test-dummy-key")
+
+from fastapi.testclient import TestClient
+
+# 导入 server 的 app（会触发 manager 和 agent_task 的模块级初始化）
+from server import app
+
+from runtime.agent_task import (
+    AgentTask,
+    TaskStore,
+    TaskValidationError,
+    validate_create_task,
+    _generate_task_id,
+    _extract_project_name_from_setup_result,
+    VALID_TASK_TYPES,
+)
+
+client = TestClient(app)
+
+
+class TestTaskDataModel(unittest.TestCase):
+    """纯数据模型测试 — 不需要 HTTP。"""
+
+    def test_agent_task_defaults(self):
+        task = AgentTask(
+            task_id="task_test_001",
+            type="worker_task",
+            description="测试任务",
+        )
+        self.assertEqual(task.status, "pending")
+        self.assertEqual(task.logs, [])
+        self.assertEqual(task.artifacts, [])
+        self.assertIsNone(task.result)
+        self.assertIsNone(task.error)
+        self.assertTrue(task.created_at)
+        self.assertTrue(task.updated_at)
+        self.assertFalse(task.cancel_requested)
+
+    def test_generate_task_id_is_unique(self):
+        ids = {_generate_task_id() for _ in range(100)}
+        self.assertEqual(len(ids), 100, "100 个 task_id 应该全部唯一")
+
+    def test_task_id_format(self):
+        tid = _generate_task_id()
+        self.assertTrue(tid.startswith("task_"), f"task_id 应以 task_ 开头: {tid}")
+        # task_YYYYMMDD_HHMMSS_xxxxxx
+        parts = tid.split("_")
+        self.assertEqual(len(parts), 4, f"task_id 应有 4 段: {tid}")
+
+    def test_task_to_dict_serializable(self):
+        import json
+        task = AgentTask(
+            task_id="task_json_001",
+            type="worker_task",
+            description="JSON 序列化测试",
+            worker_name="Alex",
+        )
+        d = task.__dict__
+        # 不应抛异常
+        s = json.dumps(d, ensure_ascii=False, default=str)
+        self.assertIn("task_json_001", s)
+
+    def test_extract_project_name_from_real_setup_report(self):
+        report = """
+=======================================================
+  项目分工表: TodoWorkbench
+=======================================================
+
+[Pipeline 步骤]
+  [ ] 实现接口: ...
+
+状态文件: project_states/TodoWorkbench_state.json
+=======================================================
+"""
+        self.assertEqual(
+            _extract_project_name_from_setup_result(report),
+            "TodoWorkbench",
+        )
+
+
+class TestInputValidation(unittest.TestCase):
+    """输入校验 — 同步函数，无 IO。"""
+
+    def setUp(self):
+        self.workers = {
+            "Alex": {"name": "Alex", "role": "dev"},
+            "Sophia": {"name": "Sophia", "role": "reviewer"},
+        }
+
+    def test_valid_worker_task_passes(self):
+        validate_create_task("worker_task", "do something", "Alex", self.workers)
+
+    def test_invalid_task_type_raises(self):
+        with self.assertRaises(TaskValidationError) as ctx:
+            validate_create_task("bad_type", "do something", "Alex", self.workers)
+        self.assertIn("bad_type", str(ctx.exception))
+
+    def test_empty_description_raises(self):
+        with self.assertRaises(TaskValidationError) as ctx:
+            validate_create_task("worker_task", "", "Alex", self.workers)
+        self.assertIn("不能为空", str(ctx.exception))
+
+    def test_whitespace_only_description_raises(self):
+        with self.assertRaises(TaskValidationError) as ctx:
+            validate_create_task("worker_task", "   ", "Alex", self.workers)
+        self.assertIn("不能为空", str(ctx.exception))
+
+    def test_none_description_raises(self):
+        with self.assertRaises(TaskValidationError):
+            validate_create_task("worker_task", None, "Alex", self.workers)
+
+    def test_missing_worker_name_for_worker_task_raises(self):
+        with self.assertRaises(TaskValidationError) as ctx:
+            validate_create_task("worker_task", "do something", None, self.workers)
+        self.assertIn("worker_name", str(ctx.exception))
+
+    def test_unknown_worker_name_raises(self):
+        with self.assertRaises(TaskValidationError) as ctx:
+            validate_create_task("worker_task", "do something", "NonExistent", self.workers)
+        self.assertIn("NonExistent", str(ctx.exception))
+
+    def test_verified_task_needs_worker_name(self):
+        with self.assertRaises(TaskValidationError) as ctx:
+            validate_create_task("verified_task", "do something", None, self.workers)
+        self.assertIn("worker_name", str(ctx.exception))
+
+    def test_all_valid_types_accepted(self):
+        for t in VALID_TASK_TYPES:
+            if t == "project_pipeline_task":
+                validate_create_task(t, "desc", None, self.workers)
+            else:
+                validate_create_task(t, "desc", "Alex", self.workers)
+
+
+class TestTaskAPI(unittest.TestCase):
+    """HTTP API 测试。"""
+
+    @classmethod
+    def setUpClass(cls):
+        """Mock 所有 LLM 入口 + 启用同步执行模式，消除后台线程泄漏。"""
+
+        # 1. 导入 task_executor（server 模块级创建的同一个实例）
+        from runtime.agent_task import get_executor
+        cls._executor = get_executor()
+
+        # 2. 开启同步模式：submit() 在当前线程直接执行，不创建后台线程
+        cls._executor._sync_mode = True
+
+        # 3. Mock 所有 runtime 入口函数，确保绝不访问真实 LLM
+        cls._run_worker_patcher = patch("runtime.workers.run_worker")
+        cls.mock_run_worker = cls._run_worker_patcher.start()
+        cls.mock_run_worker.return_value = {
+            "log": ["[test] 模拟执行"],
+            "result": '{"status":"success","summary":"模拟结果","artifacts":[]}',
+            "messages": [],
+            "model_used": "[deepseek]deepseek-v4-pro",
+            "complexity": "deepseek",
+            "structured_result": {"status": "success", "summary": "模拟结果", "artifacts": []},
+        }
+
+        cls._verified_patcher = patch("runtime.verification.delegate_with_verification")
+        cls.mock_verified = cls._verified_patcher.start()
+        cls.mock_verified.return_value = {"status": "done", "verdict": "pass"}
+
+        # project_pipeline_task 需要 mock project_setup + run_project_pipeline
+        cls._proj_setup_patcher = patch("runtime.pipeline.project_setup")
+        cls.mock_proj_setup = cls._proj_setup_patcher.start()
+        cls.mock_proj_setup.return_value = (
+            "\n=======================================================\n"
+            "  项目分工表: test_project\n"
+            "=======================================================\n"
+            "\n状态文件: project_states/test_project_state.json\n"
+        )
+
+        cls._pipeline_patcher = patch("runtime.pipeline.run_project_pipeline")
+        cls.mock_pipeline = cls._pipeline_patcher.start()
+        cls.mock_pipeline.return_value = {"status": "done", "nodes_completed": 3}
+
+    @classmethod
+    def tearDownClass(cls):
+        """先关闭 executor（等待任务完成）→ 再停止 mock patch。"""
+        if cls._executor:
+            cls._executor.shutdown(wait=True)
+        cls._run_worker_patcher.stop()
+        cls._verified_patcher.stop()
+        cls._proj_setup_patcher.stop()
+        cls._pipeline_patcher.stop()
+
+    def test_create_worker_task_returns_task_id(self):
+        resp = client.post("/agent/tasks", json={
+            "type": "worker_task",
+            "description": "检查项目代码质量",
+            "worker_name": "Alex",
+        })
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()
+        self.assertTrue(data["ok"])
+        self.assertIn("task_", data["task_id"])
+        self.assertIn(data["status"], ("pending", "running", "completed"))
+
+    def test_create_verified_task_returns_task_id(self):
+        resp = client.post("/agent/tasks", json={
+            "type": "verified_task",
+            "description": "审查架构设计",
+            "worker_name": "Sophia",
+        })
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()
+        self.assertTrue(data["ok"])
+        self.assertIn("task_", data["task_id"])
+
+    def test_create_pipeline_task_returns_task_id(self):
+        resp = client.post("/agent/tasks", json={
+            "type": "project_pipeline_task",
+            "description": "构建一个 Todo 应用",
+        })
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()
+        self.assertTrue(data["ok"])
+
+    def test_invalid_task_type_returns_422(self):
+        resp = client.post("/agent/tasks", json={
+            "type": "shell_exec",
+            "description": "执行任意命令",
+        })
+        self.assertEqual(resp.status_code, 422, resp.text)
+
+    def test_invalid_worker_name_returns_400(self):
+        resp = client.post("/agent/tasks", json={
+            "type": "worker_task",
+            "description": "测试",
+            "worker_name": "NonExistentWorker",
+        })
+        self.assertEqual(resp.status_code, 400, resp.text)
+        self.assertIn("NonExistentWorker", resp.json()["detail"])
+
+    def test_empty_description_returns_422(self):
+        resp = client.post("/agent/tasks", json={
+            "type": "worker_task",
+            "description": "",
+            "worker_name": "Alex",
+        })
+        self.assertEqual(resp.status_code, 422, resp.text)
+
+    def test_missing_worker_name_for_worker_task_returns_400(self):
+        resp = client.post("/agent/tasks", json={
+            "type": "worker_task",
+            "description": "需要 worker 但没有指定",
+        })
+        self.assertEqual(resp.status_code, 400, resp.text)
+
+    def test_get_task_returns_status(self):
+        # 先创建
+        resp = client.post("/agent/tasks", json={
+            "type": "worker_task",
+            "description": "获取状态测试",
+            "worker_name": "Alex",
+        })
+        task_id = resp.json()["task_id"]
+
+        # 查询
+        resp2 = client.get(f"/agent/tasks/{task_id}")
+        self.assertEqual(resp2.status_code, 200)
+        data = resp2.json()
+        self.assertEqual(data["task_id"], task_id)
+        self.assertEqual(data["type"], "worker_task")
+        self.assertIn(data["status"], ("pending", "running", "completed", "failed"))
+
+    def test_get_nonexistent_task_returns_404(self):
+        resp = client.get("/agent/tasks/task_nonexistent_000")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_get_task_logs(self):
+        resp = client.post("/agent/tasks", json={
+            "type": "worker_task",
+            "description": "日志测试",
+            "worker_name": "Alex",
+        })
+        task_id = resp.json()["task_id"]
+
+        resp2 = client.get(f"/agent/tasks/{task_id}/logs")
+        self.assertEqual(resp2.status_code, 200)
+        data = resp2.json()
+        self.assertEqual(data["task_id"], task_id)
+        self.assertIsInstance(data["logs"], list)
+
+    def test_cancel_pending_task_api(self):
+        """通过 API 取消一个 pending 任务（不经过 executor 提交避免竞态）。"""
+        # 直接写入 TaskStore，不触发 executor.submit()
+        tid = _generate_task_id()
+        task = AgentTask(
+            task_id=tid,
+            type="worker_task",
+            description="pending cancel api 测试",
+            worker_name="Alex",
+        )
+        TaskStore.save(task)
+
+        # 通过 API 取消
+        resp = client.post(f"/agent/tasks/{tid}/cancel")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["status"], "cancelled")
+        self.assertIn("已取消", data["message"])
+
+    def test_cancel_already_completed_task(self):
+        """取消已完成任务 → 返回当前状态不操作。"""
+        resp = client.post("/agent/tasks", json={
+            "type": "worker_task",
+            "description": "cancel completed 测试",
+            "worker_name": "Alex",
+        })
+        task_id = resp.json()["task_id"]
+
+        # sync_mode 下任务已同步完成
+        r = client.get(f"/agent/tasks/{task_id}")
+        self.assertEqual(r.json()["status"], "completed")
+
+        # 对已完成的任务发送 cancel
+        resp_cancel = client.post(f"/agent/tasks/{task_id}/cancel")
+        self.assertEqual(resp_cancel.status_code, 200)
+        data = resp_cancel.json()
+        self.assertIn("无需取消", data["message"])
+
+    def test_completed_task_has_result_or_error(self):
+        """模拟 run_worker 后，任务同步完成（sync_mode），应立即有 result。"""
+        resp = client.post("/agent/tasks", json={
+            "type": "worker_task",
+            "description": "模拟执行任务",
+            "worker_name": "Alex",
+        })
+        task_id = resp.json()["task_id"]
+
+        # sync_mode 下任务已同步完成，无需轮询等待
+        r = client.get(f"/agent/tasks/{task_id}")
+        status = r.json()["status"]
+        self.assertEqual(status, "completed",
+                         f"sync_mode 下任务应立即完成，实际: {status}")
+
+        r = client.get(f"/agent/tasks/{task_id}/result")
+        self.assertEqual(r.status_code, 200)
+        result_data = r.json()
+        self.assertIsNotNone(result_data.get("result"))
+
+    def test_list_tasks(self):
+        resp = client.get("/agent/tasks?limit=5")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertIn("total", data)
+        self.assertIn("items", data)
+        self.assertIsInstance(data["items"], list)
+
+    def test_get_task_detail(self):
+        resp = client.post("/agent/tasks", json={
+            "type": "worker_task",
+            "description": "detail 测试",
+            "worker_name": "Alex",
+        })
+        task_id = resp.json()["task_id"]
+
+        resp2 = client.get(f"/agent/tasks/{task_id}/detail")
+        self.assertEqual(resp2.status_code, 200)
+        data = resp2.json()
+        self.assertEqual(data["task_id"], task_id)
+        self.assertIn("logs", data)
+        self.assertIn("cancel_requested", data)
+
+    def test_cannot_create_task_with_empty_type(self):
+        resp = client.post("/agent/tasks", json={
+            "type": "",
+            "description": "空 type 测试",
+            "worker_name": "Alex",
+        })
+        self.assertGreaterEqual(resp.status_code, 400)
+
+
+class TestTaskPersistence(unittest.TestCase):
+    """任务持久化测试。"""
+
+    def test_save_and_load_roundtrip(self):
+        task = AgentTask(
+            task_id="task_persist_test",
+            type="worker_task",
+            description="持久化测试",
+            worker_name="Alex",
+        )
+        TaskStore.save(task)
+
+        loaded = TaskStore.get("task_persist_test")
+        self.assertIsNotNone(loaded)
+        self.assertEqual(loaded.task_id, task.task_id)
+        self.assertEqual(loaded.type, task.type)
+        self.assertEqual(loaded.description, task.description)
+
+    def test_update_preserves_changes(self):
+        task = AgentTask(
+            task_id="task_update_test",
+            type="worker_task",
+            description="before update",
+        )
+        TaskStore.save(task)
+
+        task.status = "running"
+        task.progress = "50%"
+        TaskStore.save(task)
+
+        loaded = TaskStore.get("task_update_test")
+        self.assertEqual(loaded.status, "running")
+        self.assertEqual(loaded.progress, "50%")
+
+    def test_list_all_returns_tasks(self):
+        tasks_before = TaskStore.list_all()
+        task = AgentTask(
+            task_id="task_list_all_test",
+            type="worker_task",
+            description="list 测试",
+        )
+        TaskStore.save(task)
+        tasks_after = TaskStore.list_all()
+        self.assertGreaterEqual(len(tasks_after), len(tasks_before))
+
+
+if __name__ == "__main__":
+    unittest.main()
