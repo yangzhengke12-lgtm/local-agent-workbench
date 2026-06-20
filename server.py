@@ -6,6 +6,7 @@ import asyncio
 import io, json, os, sys, threading
 from contextlib import asynccontextmanager, redirect_stdout
 from datetime import datetime
+from pathlib import Path
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -25,6 +26,14 @@ from runtime.agent_task import (
     init_executor,
     get_executor,
     _generate_task_id,
+)
+from runtime.persistence import (
+    KNOWLEDGE_FILE,
+    PROJECT_STATE_DIR,
+    SESSION_FILE,
+    TASK_BOARD_FILE,
+    SCORE_FILE,
+    _load_json,
 )
 
 @asynccontextmanager
@@ -52,9 +61,113 @@ task_executor = init_executor(workers, max_workers=4)
 
 # ── 桌面工作台 workspace 状态 ──
 _current_workspace = {"path": None, "set_at": None}
+_WORKSPACE_EXCLUDED_DIRS = {".git", "__pycache__", "node_modules", ".venv", "venv", ".pytest_cache", ".codegraph"}
+_TEXT_FILE_EXTENSIONS = {
+    ".bat", ".c", ".cfg", ".conf", ".cpp", ".cs", ".css", ".csv", ".env", ".go",
+    ".h", ".html", ".ini", ".java", ".js", ".json", ".jsx", ".log", ".md", ".mjs",
+    ".py", ".rs", ".sh", ".sql", ".toml", ".ts", ".tsx", ".txt", ".xml", ".yaml",
+    ".yml",
+}
 
 def _now_ws():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _repo_path(*parts):
+    return os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), *parts))
+
+
+def _workspace_root() -> str:
+    root = _current_workspace.get("path")
+    if not root:
+        raise HTTPException(status_code=400, detail="工作区未设置")
+    root = os.path.abspath(os.path.expanduser(root))
+    if not os.path.isdir(root):
+        raise HTTPException(status_code=400, detail=f"工作区不存在: {root}")
+    return root
+
+
+def _resolve_workspace_path(path: str | None = None) -> str:
+    root = _workspace_root()
+    target = root if not path else os.path.abspath(os.path.join(root, path) if not os.path.isabs(path) else path)
+    try:
+        common = os.path.commonpath([root, target])
+    except ValueError:
+        raise HTTPException(status_code=403, detail="路径不在工作区内")
+    if common != root:
+        raise HTTPException(status_code=403, detail="路径不在工作区内")
+    return target
+
+
+def _rel_to_workspace(path: str) -> str:
+    root = _workspace_root()
+    rel = os.path.relpath(path, root)
+    return "" if rel == "." else rel.replace("\\", "/")
+
+
+def _safe_load_json_file(path: str, default):
+    if not os.path.exists(path):
+        return default
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return default
+
+
+def _is_probably_text(path: str, sample: bytes) -> bool:
+    suffix = Path(path).suffix.lower()
+    if suffix in _TEXT_FILE_EXTENSIONS:
+        return True
+    if b"\x00" in sample:
+        return False
+    try:
+        sample.decode("utf-8")
+        return True
+    except UnicodeDecodeError:
+        return False
+
+
+def _parse_task_events(task: AgentTask) -> list[dict]:
+    events = []
+    for idx, raw in enumerate(task.logs or []):
+        text = str(raw)
+        timestamp = ""
+        body = text
+        if text.startswith("[") and "] " in text:
+            timestamp, body = text[1:].split("] ", 1)
+
+        event_type = "log"
+        tool_name = None
+        args = None
+        if "[工具:" in body or body.startswith("工具:"):
+            event_type = "tool_call"
+            marker = body.split("工具:", 1)[1].strip().rstrip("]")
+            if "(" in marker and marker.endswith(")"):
+                tool_name = marker.split("(", 1)[0].strip()
+                raw_args = marker.split("(", 1)[1][:-1]
+                try:
+                    args = json.loads(raw_args)
+                except Exception:
+                    args = raw_args
+            else:
+                tool_name = marker
+        elif "[工具返回:" in body or body.startswith("工具返回:") or "返回:" in body:
+            event_type = "tool_result"
+        elif "异常" in body or "Error" in body or "failed" in body:
+            event_type = "error"
+        elif "警告" in body or "Warning" in body:
+            event_type = "warn"
+
+        events.append({
+            "index": idx,
+            "type": event_type,
+            "timestamp": timestamp,
+            "tool_name": tool_name,
+            "args": args,
+            "text": body,
+        })
+    return events
 
 MEMBERS = [
     {"name":"Boss","role":"老板","color":"#F5A623"},
@@ -261,10 +374,205 @@ async def get_workspace():
 async def get_workers():
     return {
         "workers": [
-            {"name": k, "role": v.get("role", ""), "description": v.get("description", "")}
+            {
+                "name": k,
+                "role": v.get("role", ""),
+                "description": v.get("description", ""),
+                "tools": v.get("tool_names", []),
+                "model": v.get("model", ""),
+            }
             for k, v in workers.items()
         ]
     }
+
+
+@app.get("/agent/workspace/files")
+async def list_workspace_files(path: str = ""):
+    """列出工作区内某目录的一层文件。只读、不可越界。"""
+    root = _workspace_root()
+    target = _resolve_workspace_path(path)
+    if not os.path.isdir(target):
+        raise HTTPException(status_code=400, detail=f"不是目录: {target}")
+
+    entries = []
+    truncated = False
+    try:
+        names = sorted(os.listdir(target), key=lambda n: (not os.path.isdir(os.path.join(target, n)), n.lower()))
+    except OSError as e:
+        raise HTTPException(status_code=400, detail=f"无法读取目录: {e}")
+
+    for name in names:
+        full = os.path.join(target, name)
+        is_dir = os.path.isdir(full)
+        if is_dir and name in _WORKSPACE_EXCLUDED_DIRS:
+            continue
+        try:
+            stat = os.stat(full)
+        except OSError:
+            continue
+        entries.append({
+            "name": name,
+            "path": full,
+            "relative_path": _rel_to_workspace(full),
+            "type": "directory" if is_dir else "file",
+            "size": stat.st_size,
+            "modified_at": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+        })
+        if len(entries) >= 200:
+            truncated = True
+            break
+
+    return JSONResponse({
+        "workspace": root,
+        "path": target,
+        "relative_path": _rel_to_workspace(target),
+        "parent": _rel_to_workspace(os.path.dirname(target)) if os.path.abspath(target) != root else None,
+        "entries": entries,
+        "truncated": truncated,
+    })
+
+
+@app.get("/agent/workspace/file")
+async def preview_workspace_file(path: str, max_chars: int = 20000):
+    """预览工作区内文本文件。二进制或超大文件返回明确原因。"""
+    target = _resolve_workspace_path(path)
+    if not os.path.isfile(target):
+        raise HTTPException(status_code=400, detail=f"不是文件: {target}")
+    size = os.path.getsize(target)
+    with open(target, "rb") as f:
+        sample = f.read(4096)
+    if not _is_probably_text(target, sample):
+        return JSONResponse({
+            "path": target,
+            "relative_path": _rel_to_workspace(target),
+            "previewable": False,
+            "content": "",
+            "size": size,
+            "truncated": False,
+            "reason": "二进制文件不可预览",
+        })
+
+    max_chars = max(1000, min(max_chars, 80000))
+    try:
+        with open(target, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read(max_chars + 1)
+    except OSError as e:
+        raise HTTPException(status_code=400, detail=f"无法读取文件: {e}")
+    truncated = len(content) > max_chars
+    if truncated:
+        content = content[:max_chars]
+    return JSONResponse({
+        "path": target,
+        "relative_path": _rel_to_workspace(target),
+        "previewable": True,
+        "content": content,
+        "size": size,
+        "truncated": truncated,
+        "reason": "",
+    })
+
+
+@app.get("/agent/tasks/{task_id}/events")
+async def get_agent_task_events(task_id: str):
+    """把原始日志整理为工具调用/工具返回/错误等事件。"""
+    task = TaskStore.get(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"任务不存在: {task_id}")
+    events = _parse_task_events(task)
+    return JSONResponse({
+        "task_id": task.task_id,
+        "status": task.status,
+        "event_count": len(events),
+        "events": events,
+    })
+
+
+@app.get("/agent/memory")
+async def get_agent_memory():
+    """返回本地记忆/知识库/任务板状态，不触发任何 LLM。"""
+    sessions = _safe_load_json_file(_repo_path(SESSION_FILE), {})
+    knowledge = _load_json(_repo_path(KNOWLEDGE_FILE), [])
+    task_board = _load_json(_repo_path(TASK_BOARD_FILE), [])
+    scores = _load_json(_repo_path(SCORE_FILE), [])
+    project_dir = _repo_path(PROJECT_STATE_DIR)
+    project_files = []
+    if os.path.isdir(project_dir):
+        project_files = sorted([
+            name for name in os.listdir(project_dir)
+            if name.endswith(".json")
+        ])[:50]
+
+    recent_knowledge = list(reversed(knowledge[-8:])) if isinstance(knowledge, list) else []
+    return JSONResponse({
+        "sessions": {
+            "count": len(sessions) if isinstance(sessions, dict) else 0,
+            "keys": sorted(list(sessions.keys()))[:20] if isinstance(sessions, dict) else [],
+        },
+        "knowledge": {
+            "count": len(knowledge) if isinstance(knowledge, list) else 0,
+            "recent": recent_knowledge,
+            "file": _repo_path(KNOWLEDGE_FILE),
+        },
+        "task_board": {
+            "count": len(task_board) if isinstance(task_board, list) else 0,
+            "file": _repo_path(TASK_BOARD_FILE),
+        },
+        "scores": {
+            "count": len(scores) if isinstance(scores, list) else 0,
+            "file": _repo_path(SCORE_FILE),
+        },
+        "project_states": {
+            "count": len(project_files),
+            "files": project_files,
+            "directory": project_dir,
+        },
+    })
+
+
+@app.get("/agent/rules")
+async def get_agent_rules():
+    """返回桌面端可展示的任务规则和工具权限。"""
+    dangerous_tools = ["write_file", "run_command", "github_create_pr", "save_template"]
+    return JSONResponse({
+        "task_types": [
+            {
+                "type": "worker_task",
+                "label": "Worker 任务",
+                "requires_worker": True,
+                "description": "交给一个指定 Worker 直接执行，适合明确的小任务。",
+            },
+            {
+                "type": "verified_task",
+                "label": "验证任务",
+                "requires_worker": True,
+                "description": "Worker 执行后进入验证闭环，适合代码修改、测试和需要质量把关的任务。",
+            },
+            {
+                "type": "project_pipeline_task",
+                "label": "Pipeline",
+                "requires_worker": False,
+                "description": "由 project_setup 拆分 DAG 并运行流水线，适合多步骤项目任务。",
+            },
+        ],
+        "workspace_policy": {
+            "current_workspace": _current_workspace.get("path"),
+            "set_at": _current_workspace.get("set_at"),
+            "file_preview": "只允许读取当前 workspace 内文件；排除依赖、缓存和 .git 目录。",
+            "command_execution": "桌面接口不执行任意命令；命令只能由具备 run_command 工具的 Worker 在任务中调用。",
+        },
+        "dangerous_tools": dangerous_tools,
+        "workers": [
+            {
+                "name": k,
+                "role": v.get("role", ""),
+                "description": v.get("description", ""),
+                "tools": v.get("tool_names", []),
+                "dangerous_tools": [tool for tool in v.get("tool_names", []) if tool in dangerous_tools],
+                "model": v.get("model", ""),
+            }
+            for k, v in workers.items()
+        ],
+    })
 
 
 # ═══════════════════════════════════════════════════════════════

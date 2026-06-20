@@ -1,6 +1,7 @@
 """Agent Task API 测试 —— HTTP 接口 + 数据模型 + 验证逻辑。"""
 import os
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch, MagicMock
 
@@ -380,6 +381,85 @@ class TestTaskAPI(unittest.TestCase):
             "worker_name": "Alex",
         })
         self.assertGreaterEqual(resp.status_code, 400)
+
+    def test_workspace_file_list_and_preview(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "README.md"), "w", encoding="utf-8") as f:
+                f.write("# demo\nhello")
+            os.makedirs(os.path.join(tmp, "node_modules"))
+            with open(os.path.join(tmp, "node_modules", "hidden.js"), "w", encoding="utf-8") as f:
+                f.write("hidden")
+
+            resp = client.post("/agent/workspace", json={"path": tmp})
+            self.assertEqual(resp.status_code, 200, resp.text)
+
+            files = client.get("/agent/workspace/files")
+            self.assertEqual(files.status_code, 200, files.text)
+            names = [entry["name"] for entry in files.json()["entries"]]
+            self.assertIn("README.md", names)
+            self.assertNotIn("node_modules", names)
+
+            preview = client.get("/agent/workspace/file", params={"path": "README.md"})
+            self.assertEqual(preview.status_code, 200, preview.text)
+            data = preview.json()
+            self.assertTrue(data["previewable"])
+            self.assertEqual(data["relative_path"], "README.md")
+            self.assertIn("hello", data["content"])
+
+    def test_workspace_file_rejects_path_escape(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            client.post("/agent/workspace", json={"path": tmp})
+            resp = client.get("/agent/workspace/files", params={"path": "../"})
+            self.assertEqual(resp.status_code, 403, resp.text)
+
+    def test_workspace_binary_preview_returns_reason(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "data.bin"), "wb") as f:
+                f.write(b"\x00\x01\x02abc")
+            client.post("/agent/workspace", json={"path": tmp})
+            resp = client.get("/agent/workspace/file", params={"path": "data.bin"})
+            self.assertEqual(resp.status_code, 200, resp.text)
+            data = resp.json()
+            self.assertFalse(data["previewable"])
+            self.assertIn("二进制", data["reason"])
+
+    def test_task_events_parse_tool_logs(self):
+        tid = _generate_task_id()
+        task = AgentTask(
+            task_id=tid,
+            type="worker_task",
+            description="events 测试",
+            worker_name="Alex",
+            logs=[
+                '[2026-01-01 10:00:00] [工具: read_file({"file_path":"README.md"})]',
+                "[2026-01-01 10:00:01] [工具返回: hello]",
+                "[2026-01-01 10:00:02] 异常: boom",
+            ],
+        )
+        TaskStore.save(task)
+        resp = client.get(f"/agent/tasks/{tid}/events")
+        self.assertEqual(resp.status_code, 200, resp.text)
+        events = resp.json()["events"]
+        self.assertEqual(events[0]["type"], "tool_call")
+        self.assertEqual(events[0]["tool_name"], "read_file")
+        self.assertEqual(events[0]["args"]["file_path"], "README.md")
+        self.assertEqual(events[1]["type"], "tool_result")
+        self.assertEqual(events[2]["type"], "error")
+
+    def test_memory_and_rules_have_stable_shape(self):
+        memory = client.get("/agent/memory")
+        self.assertEqual(memory.status_code, 200, memory.text)
+        memory_data = memory.json()
+        self.assertIn("sessions", memory_data)
+        self.assertIn("knowledge", memory_data)
+        self.assertIn("project_states", memory_data)
+
+        rules = client.get("/agent/rules")
+        self.assertEqual(rules.status_code, 200, rules.text)
+        rules_data = rules.json()
+        self.assertIn("task_types", rules_data)
+        self.assertIn("workers", rules_data)
+        self.assertIn("dangerous_tools", rules_data)
 
 
 class TestTaskPersistence(unittest.TestCase):

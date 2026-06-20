@@ -15,6 +15,14 @@ var state = {
   _connStatus: 'disconnected',
   _theme: localStorage.getItem('workbench_theme') || 'graphite',
   _taskQuery: '',
+  _inspectorTab: 'files',
+  _workers: [],
+  _workspaceFiles: null,
+  _workspacePath: '',
+  _filePreview: null,
+  _taskEvents: {},
+  _memory: null,
+  _rules: null,
 };
 
 // ═══════════════════════════════════════════════════════
@@ -107,7 +115,10 @@ function handleWsMessage(msg) {
 
 async function loadWorkspace() {
   var data = await apiGet('/agent/workspace');
-  if (data) { renderWorkspace(data.workspace); }
+  if (data) {
+    renderWorkspace(data.workspace);
+    if (data.workspace) { loadWorkspaceFiles(''); }
+  }
 }
 
 function renderWorkspace(wsPath) {
@@ -170,6 +181,7 @@ async function chooseWorkspaceDirectory() {
 async function loadWorkers() {
   var data = await apiGet('/agent/workers');
   if (!data || !data.workers) return;
+  state._workers = data.workers;
   var select = document.getElementById('task-worker');
   select.innerHTML = '';
   for (var i = 0; i < data.workers.length; i++) {
@@ -180,6 +192,7 @@ async function loadWorkers() {
     select.appendChild(opt);
   }
   updateWorkerAvailability();
+  renderInspector();
 }
 
 // ═══════════════════════════════════════════════════════
@@ -262,6 +275,7 @@ async function fetchAndRenderDetail(taskId) {
   renderTaskDetail(data);
   renderLogs(data);
   renderResult(data);
+  loadTaskEvents(taskId);
 }
 
 // ═══════════════════════════════════════════════════════
@@ -351,46 +365,269 @@ function renderLogs(task) {
 }
 
 function renderResult(task) {
-  var resultContainer = document.getElementById('result-content');
-  var artifactsContainer = document.getElementById('artifacts-content');
-
-  // Result
-  if (task.status === 'pending') {
-    resultContainer.innerHTML = '<span class="placeholder">' + t('result.pending') + '</span>';
-    resultContainer.className = 'placeholder';
-  } else if (task.status === 'running') {
-    resultContainer.innerHTML = '<span class="placeholder">' + t('result.running') + '</span>';
-    resultContainer.className = 'placeholder';
-  } else if (task.status === 'failed') {
-    resultContainer.innerHTML = '<span style="color:#E74C3C;">' + escHtml(task.error || t('result.unknown_error')) + '</span>';
-    resultContainer.className = '';
-  } else if (task.result) {
-    resultContainer.textContent = task.result;
-    resultContainer.className = '';
-  } else {
-    resultContainer.innerHTML = '<span class="placeholder">' + t('result.empty') + '</span>';
-    resultContainer.className = 'placeholder';
-  }
-
-  // Artifacts
-  var artifacts = task.artifacts || [];
-  if (artifacts.length === 0) {
-    artifactsContainer.innerHTML = '<span class="placeholder">' + t('artifacts.empty') + '</span>';
-    artifactsContainer.className = 'placeholder';
-  } else {
-    var html = '';
-    for (var i = 0; i < artifacts.length; i++) {
-      var a = artifacts[i];
-      var ap = typeof a === 'string' ? a : (a.path || a.name || JSON.stringify(a));
-      html += '<div class="artifact-item">' + escHtml(ap) + '</div>';
-    }
-    artifactsContainer.innerHTML = html;
-    artifactsContainer.className = '';
-  }
+  renderInspector();
 }
 
 // ═══════════════════════════════════════════════════════
-// Section 8: Helpers
+// Section 8: Inspector data / views
+// ═══════════════════════════════════════════════════════
+
+async function loadWorkspaceFiles(path) {
+  var query = path ? '?path=' + encodeURIComponent(path) : '';
+  var data = await apiGet('/agent/workspace/files' + query);
+  if (!data) {
+    state._workspaceFiles = null;
+    renderInspector();
+    return;
+  }
+  state._workspaceFiles = data;
+  state._workspacePath = data.relative_path || '';
+  state._filePreview = null;
+  renderInspector();
+}
+
+async function previewWorkspaceFile(path) {
+  var data = await apiGet('/agent/workspace/file?path=' + encodeURIComponent(path));
+  if (!data) {
+    showToast('File preview failed');
+    return;
+  }
+  state._filePreview = data;
+  state._inspectorTab = 'files';
+  setInspectorActiveTab();
+  renderInspector();
+}
+
+async function loadTaskEvents(taskId) {
+  if (!taskId) return;
+  var data = await apiGet('/agent/tasks/' + taskId + '/events');
+  if (data) {
+    state._taskEvents[taskId] = data.events || [];
+    renderInspector();
+  }
+}
+
+async function loadMemory() {
+  var data = await apiGet('/agent/memory');
+  if (data) {
+    state._memory = data;
+    renderInspector();
+  }
+}
+
+async function loadRules() {
+  var data = await apiGet('/agent/rules');
+  if (data) {
+    state._rules = data;
+    renderInspector();
+  }
+}
+
+function renderInspector() {
+  var container = document.getElementById('inspector-content');
+  if (!container) return;
+  if (state._inspectorTab === 'files') {
+    container.innerHTML = renderFilesPanel();
+  } else if (state._inspectorTab === 'tools') {
+    container.innerHTML = renderToolsPanel();
+  } else if (state._inspectorTab === 'memory') {
+    container.innerHTML = renderMemoryPanel();
+  } else {
+    container.innerHTML = renderRulesPanel();
+  }
+}
+
+function renderFilesPanel() {
+  var task = state.selectedTaskId ? state.tasks[state.selectedTaskId] : null;
+  var html = '<div class="inspector-scroll">';
+  html += '<div class="panel-title">工作区文件</div>';
+  if (!state._wsPath) {
+    html += '<div class="inspector-empty">先选择工作区，文件树会显示在这里。</div>';
+  } else if (!state._workspaceFiles) {
+    html += '<div class="inspector-empty">正在读取工作区文件...</div>';
+  } else {
+    html += '<div class="file-nav">';
+    html += '<span>' + escHtml(state._workspaceFiles.relative_path || '/') + '</span>';
+    if (state._workspaceFiles.parent !== null) {
+      html += '<button data-open-dir="' + escAttr(state._workspaceFiles.parent || '') + '">上级</button>';
+    }
+    html += '</div>';
+    html += '<div class="file-list">';
+    var entries = state._workspaceFiles.entries || [];
+    if (entries.length === 0) {
+      html += '<div class="inspector-empty compact">这个目录没有可展示文件。</div>';
+    }
+    for (var i = 0; i < entries.length; i++) {
+      var e = entries[i];
+      var dataAttr = e.type === 'directory'
+        ? 'data-open-dir="' + escAttr(e.relative_path) + '"'
+        : 'data-preview-file="' + escAttr(e.relative_path) + '"';
+      html += '<button class="file-row ' + e.type + '" ' + dataAttr + '>';
+      html += '<span class="file-name">' + escHtml(e.name) + '</span>';
+      html += '<span class="file-meta">' + (e.type === 'directory' ? 'dir' : formatBytes(e.size)) + '</span>';
+      html += '</button>';
+    }
+    html += '</div>';
+  }
+
+  html += '<div class="panel-title">文件预览</div>';
+  if (!state._filePreview) {
+    html += '<div class="inspector-empty">点击上方文件，或点击任务产物文件进行预览。</div>';
+  } else if (!state._filePreview.previewable) {
+    html += '<div class="inspector-empty">' + escHtml(state._filePreview.reason || '不可预览') + '</div>';
+  } else {
+    html += '<div class="file-preview-title">' + escHtml(state._filePreview.relative_path) + '</div>';
+    html += '<pre class="file-preview">' + escHtml(state._filePreview.content) + '</pre>';
+    if (state._filePreview.truncated) {
+      html += '<div class="inspector-note">内容过长，已截断显示。</div>';
+    }
+  }
+
+  html += '<div class="panel-title">当前任务产物</div>';
+  html += renderTaskResultBlock(task);
+  html += renderArtifactsBlock(task);
+  html += '</div>';
+  return html;
+}
+
+function renderTaskResultBlock(task) {
+  if (!task) return '<div class="inspector-empty">选择任务后会显示结果摘要。</div>';
+  if (task.status === 'pending') return '<div class="inspector-empty">' + t('result.pending') + '</div>';
+  if (task.status === 'running') return '<div class="inspector-empty">' + t('result.running') + '</div>';
+  if (task.status === 'failed') return '<div class="result-block error">' + escHtml(task.error || t('result.unknown_error')) + '</div>';
+  if (!task.result) return '<div class="inspector-empty">' + t('result.empty') + '</div>';
+  return '<pre class="result-block">' + escHtml(task.result) + '</pre>';
+}
+
+function renderArtifactsBlock(task) {
+  var artifacts = task ? (task.artifacts || []) : [];
+  if (artifacts.length === 0) return '<div class="inspector-empty compact">' + t('artifacts.empty') + '</div>';
+  var html = '<div class="artifact-list">';
+  for (var i = 0; i < artifacts.length; i++) {
+    var a = artifacts[i];
+    var ap = typeof a === 'string' ? a : (a.path || a.name || JSON.stringify(a));
+    var summary = typeof a === 'object' ? (a.summary || a.type || '') : '';
+    html += '<button class="artifact-item" data-preview-file="' + escAttr(ap) + '">';
+    html += '<strong>' + escHtml(ap) + '</strong>';
+    if (summary) html += '<span>' + escHtml(summary) + '</span>';
+    html += '</button>';
+  }
+  html += '</div>';
+  return html;
+}
+
+function renderToolsPanel() {
+  var taskId = state.selectedTaskId;
+  var events = taskId ? (state._taskEvents[taskId] || []) : [];
+  var html = '<div class="inspector-scroll">';
+  html += '<div class="panel-title">任务工具轨迹</div>';
+  if (!taskId) {
+    html += '<div class="inspector-empty">选择任务后，这里会显示真实工具调用和返回。</div>';
+  } else if (events.length === 0) {
+    html += '<div class="inspector-empty">这个任务还没有工具事件。</div>';
+  } else {
+    html += '<div class="event-list">';
+    for (var i = 0; i < events.length; i++) {
+      var ev = events[i];
+      html += '<div class="event-item ' + escHtml(ev.type) + '">';
+      html += '<div class="event-head"><span>' + escHtml(ev.type) + '</span><span>#' + ev.index + '</span></div>';
+      html += '<div class="event-text">' + escHtml(ev.text) + '</div>';
+      if (ev.tool_name) html += '<div class="event-tool">' + escHtml(ev.tool_name) + '</div>';
+      html += '</div>';
+    }
+    html += '</div>';
+  }
+  html += '<div class="panel-title">Worker 工具权限</div>';
+  html += renderWorkerToolMatrix(state._workers);
+  html += '</div>';
+  return html;
+}
+
+function renderWorkerToolMatrix(workers) {
+  if (!workers || workers.length === 0) return '<div class="inspector-empty">正在加载 worker 权限...</div>';
+  var html = '<div class="worker-matrix">';
+  for (var i = 0; i < workers.length; i++) {
+    var w = workers[i];
+    html += '<div class="worker-card">';
+    html += '<div class="worker-card-head"><strong>' + escHtml(w.name) + '</strong><span>' + escHtml(w.role || '') + '</span></div>';
+    var tools = w.tools || [];
+    html += '<div class="tool-tags">';
+    if (tools.length === 0) html += '<span class="tool-tag muted">manager tools</span>';
+    for (var j = 0; j < tools.length; j++) {
+      html += '<span class="tool-tag">' + escHtml(tools[j]) + '</span>';
+    }
+    html += '</div></div>';
+  }
+  html += '</div>';
+  return html;
+}
+
+function renderMemoryPanel() {
+  if (!state._memory) {
+    loadMemory();
+    return '<div class="inspector-scroll"><div class="inspector-empty">正在加载本地记忆...</div></div>';
+  }
+  var m = state._memory;
+  var html = '<div class="inspector-scroll">';
+  html += '<div class="metric-grid">';
+  html += renderMetric('Sessions', m.sessions.count);
+  html += renderMetric('Knowledge', m.knowledge.count);
+  html += renderMetric('Task Board', m.task_board.count);
+  html += renderMetric('Project State', m.project_states.count);
+  html += '</div>';
+  html += '<div class="panel-title">最近知识</div>';
+  var recent = m.knowledge.recent || [];
+  if (recent.length === 0) {
+    html += '<div class="inspector-empty">本地知识库还没有记录。</div>';
+  } else {
+    for (var i = 0; i < recent.length; i++) {
+      var item = recent[i];
+      html += '<div class="knowledge-item"><strong>' + escHtml(item.topic || 'Untitled') + '</strong>';
+      html += '<p>' + escHtml(item.content || '') + '</p></div>';
+    }
+  }
+  html += '<div class="panel-title">存储位置</div>';
+  html += '<div class="path-list">';
+  html += '<div>' + escHtml(m.knowledge.file) + '</div>';
+  html += '<div>' + escHtml(m.project_states.directory) + '</div>';
+  html += '</div>';
+  html += '</div>';
+  return html;
+}
+
+function renderRulesPanel() {
+  if (!state._rules) {
+    loadRules();
+    return '<div class="inspector-scroll"><div class="inspector-empty">正在加载运行规则...</div></div>';
+  }
+  var r = state._rules;
+  var html = '<div class="inspector-scroll">';
+  html += '<div class="panel-title">任务类型规则</div>';
+  for (var i = 0; i < r.task_types.length; i++) {
+    var tt = r.task_types[i];
+    html += '<div class="rule-card"><div><strong>' + escHtml(tt.label) + '</strong><span>' + escHtml(tt.type) + '</span></div>';
+    html += '<p>' + escHtml(tt.description) + '</p>';
+    html += '<small>' + (tt.requires_worker ? '必须选择 Worker' : '不需要指定 Worker') + '</small></div>';
+  }
+  html += '<div class="panel-title">Workspace 安全边界</div>';
+  html += '<div class="rule-card"><p>' + escHtml(r.workspace_policy.file_preview) + '</p><p>' + escHtml(r.workspace_policy.command_execution) + '</p></div>';
+  html += '<div class="panel-title">高风险工具</div>';
+  html += '<div class="tool-tags">';
+  for (var j = 0; j < r.dangerous_tools.length; j++) {
+    html += '<span class="tool-tag danger">' + escHtml(r.dangerous_tools[j]) + '</span>';
+  }
+  html += '</div>';
+  html += renderWorkerToolMatrix(r.workers || []);
+  html += '</div>';
+  return html;
+}
+
+function renderMetric(label, value) {
+  return '<div class="metric-card"><strong>' + escHtml(String(value || 0)) + '</strong><span>' + escHtml(label) + '</span></div>';
+}
+
+// ═══════════════════════════════════════════════════════
+// Section 9: Helpers
 // ═══════════════════════════════════════════════════════
 
 function statusToText(status) {
@@ -443,6 +680,25 @@ function formatTime(ts) {
 function escHtml(str) {
   if (!str) return '';
   return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function escAttr(str) {
+  return escHtml(str).replace(/'/g, '&#39;');
+}
+
+function formatBytes(bytes) {
+  var value = Number(bytes || 0);
+  if (value < 1024) return value + ' B';
+  if (value < 1024 * 1024) return (value / 1024).toFixed(1) + ' KB';
+  return (value / 1024 / 1024).toFixed(1) + ' MB';
+}
+
+function setInspectorActiveTab() {
+  var buttons = document.querySelectorAll('.inspector-tabs button');
+  for (var i = 0; i < buttons.length; i++) {
+    var tab = buttons[i].getAttribute('data-inspector-tab');
+    buttons[i].classList.toggle('active', tab === state._inspectorTab);
+  }
 }
 
 function setConnectionStatus(status) {
@@ -519,28 +775,33 @@ function exportSelectedTask() {
 }
 
 function switchInspectorTab(button) {
-  var buttons = document.querySelectorAll('.inspector-tabs button');
-  for (var i = 0; i < buttons.length; i++) {
-    buttons[i].classList.remove('active');
-  }
-  button.classList.add('active');
   var tab = button.getAttribute('data-inspector-tab');
-  var messages = {
-    files: 'Showing task result and artifacts',
-    tools: 'Tool traces are shown in execution logs',
-    memory: 'Memory view is not connected yet',
-    rules: 'Rules are controlled by worker tool permissions',
-  };
-  showToast(messages[tab] || 'Inspector updated');
+  state._inspectorTab = tab || 'files';
+  setInspectorActiveTab();
+  if (state._inspectorTab === 'memory' && !state._memory) { loadMemory(); }
+  if (state._inspectorTab === 'rules' && !state._rules) { loadRules(); }
+  if (state._inspectorTab === 'tools' && state.selectedTaskId && !state._taskEvents[state.selectedTaskId]) {
+    loadTaskEvents(state.selectedTaskId);
+  }
+  renderInspector();
 }
 
 function handleFooterAction(action) {
-  var messages = {
-    policy: 'Approval gates are planned for high-risk tools',
-    about: 'Local Agent Workbench - local-first multi-agent task runtime',
-    settings: 'Use the top-right theme and language controls for now',
-  };
-  showToast(messages[action] || 'Not available yet');
+  if (action === 'policy') {
+    state._inspectorTab = 'rules';
+    setInspectorActiveTab();
+    loadRules();
+    showToast('Showing runtime rules');
+    return;
+  }
+  if (action === 'settings') {
+    state._inspectorTab = 'memory';
+    setInspectorActiveTab();
+    loadMemory();
+    showToast('Showing local storage and settings');
+    return;
+  }
+  showToast('Local Agent Workbench - local-first multi-agent task runtime');
 }
 
 function startNewTask() {
@@ -550,25 +811,16 @@ function startNewTask() {
   var progress = document.getElementById('task-progress');
   var logs = document.getElementById('log-stream');
   var logCount = document.getElementById('log-count');
-  var result = document.getElementById('result-content');
-  var artifacts = document.getElementById('artifacts-content');
   if (detail) { detail.innerHTML = '<div class="placeholder">' + t('task.select_hint') + '</div>'; }
   if (progress) { progress.innerHTML = ''; }
   if (logs) { logs.innerHTML = '<div class="placeholder">' + t('log.waiting') + '</div>'; }
   if (logCount) { logCount.textContent = '0'; }
-  if (result) {
-    result.className = 'placeholder';
-    result.innerHTML = '<span class="placeholder">' + t('result.empty') + '</span>';
-  }
-  if (artifacts) {
-    artifacts.className = 'placeholder';
-    artifacts.innerHTML = '<span class="placeholder">' + t('artifacts.empty') + '</span>';
-  }
   var input = document.getElementById('task-description');
   if (input) {
     input.value = '';
     input.focus();
   }
+  renderInspector();
   showToast('Ready for a new task');
 }
 
@@ -589,6 +841,25 @@ function handleGlobalShortcut(e) {
   } else if (key === ',') {
     e.preventDefault();
     handleFooterAction('settings');
+  }
+}
+
+function handleInspectorClick(e) {
+  var target = e.target;
+  while (target && target !== document) {
+    if (target.getAttribute) {
+      var dir = target.getAttribute('data-open-dir');
+      var file = target.getAttribute('data-preview-file');
+      if (dir !== null) {
+        loadWorkspaceFiles(dir);
+        return;
+      }
+      if (file !== null) {
+        previewWorkspaceFile(file);
+        return;
+      }
+    }
+    target = target.parentNode;
   }
 }
 
@@ -631,7 +902,12 @@ function init() {
   }
   var moreButton = document.getElementById('more-button');
   if (moreButton) {
-    moreButton.addEventListener('click', function () { showToast('More actions are not configured yet'); });
+    moreButton.addEventListener('click', function () {
+      state._inspectorTab = 'rules';
+      setInspectorActiveTab();
+      loadRules();
+      showToast('Showing workbench capabilities');
+    });
   }
   var historyRefresh = document.getElementById('history-refresh-btn');
   if (historyRefresh) {
@@ -674,11 +950,16 @@ function init() {
   document.getElementById('workspace-input').addEventListener('keydown', function (e) {
     if (e.key === 'Enter') setWorkspace();
   });
+  var inspectorContent = document.getElementById('inspector-content');
+  if (inspectorContent) { inspectorContent.addEventListener('click', handleInspectorClick); }
   document.addEventListener('keydown', handleGlobalShortcut);
 
   loadWorkspace();
   loadWorkers();
   loadTasks();
+  loadRules();
+  loadMemory();
+  renderInspector();
   connectWs();
 
   state.refreshTimer = setInterval(function () { loadTasks(); }, 10000);
