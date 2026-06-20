@@ -123,6 +123,8 @@ curl http://localhost:8000/agent/tasks/<task_id>/result
 
 完整 API 接入说明见 [agent_api.md](agent_api.md)。
 
+如果要接入企业知识库、飞书、Jira、GitLab、数据库或内部 API，请看 [docs/integration_guide.md](docs/integration_guide.md)。
+
 ### API 接口
 
 ```text
@@ -164,6 +166,7 @@ local-agent-workbench/
 |   `-- ...
 |-- desktop/                # Electron desktop workbench
 |-- tests/                  # Automated tests
+|-- docs/                   # Integration notes
 |-- agent_api.md            # API integration guide
 `-- requirements.txt
 ```
@@ -342,6 +345,8 @@ curl http://localhost:8000/agent/tasks/<task_id>/result
 
 For the complete integration guide, see [agent_api.md](agent_api.md).
 
+For business system integrations such as knowledge bases, Feishu, Jira, GitLab, databases, or internal APIs, see [docs/integration_guide.md](docs/integration_guide.md).
+
 ### API Surface
 
 ```text
@@ -383,6 +388,7 @@ local-agent-workbench/
 |   `-- ...
 |-- desktop/                # Electron desktop workbench
 |-- tests/                  # Automated tests
+|-- docs/                   # Integration notes
 |-- agent_api.md            # API integration guide
 `-- requirements.txt
 ```
