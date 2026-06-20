@@ -1,22 +1,148 @@
 # Local Agent Workbench
 
-一个 local-first 的 Agent 桌面工作台。它把多 Agent Runtime 封装成异步任务服务，并提供 Electron 桌面端来选择本地工作区、提交任务、查看执行日志和结果。
+**A local-first multi-agent desktop workbench for turning AI agents into observable, async task workflows.**
 
-这个项目不是通用联网搜索 Agent。当前版本默认处理本地项目、私有上下文和后端任务流；联网搜索、企业知识库、飞书、数据库等能力可以通过 tools/provider adapter 后续接入。
+Local Agent Workbench is a FastAPI + Electron project that lets you run a multi-agent runtime from a desktop UI or a standard REST/WebSocket API. It is built for local repositories, private project context, task logs, result inspection, and controlled tool execution.
 
 [![Tests](https://img.shields.io/badge/tests-207%20passed-green)](.)
 [![Python](https://img.shields.io/badge/python-3.12-blue)](.)
-[![Desktop](https://img.shields.io/badge/desktop-Electron-lightgrey)](.)
+[![FastAPI](https://img.shields.io/badge/backend-FastAPI-009688)](.)
+[![Electron](https://img.shields.io/badge/desktop-Electron-47848F)](.)
 
-## What It Does
+> Current scope: local project workbench. Public web search, enterprise SSO, packaged installers, and external business systems are designed as future tool/provider adapters.
 
-- 多 Agent 任务调度：Manager、Deputy、5 个 Worker 通过 `workers.json` 配置。
-- 异步任务 API：`POST /agent/tasks` 立即返回 `task_id`，后台线程池执行。
-- 实时状态更新：WebSocket 推送 `agent_task_update`。
-- 任务持久化：任务状态、日志、结果写入本地 JSON 文件。
-- 本地桌面工作台：Electron UI 支持 workspace、任务列表、日志和结果面板。
-- 工程化 Runtime：`manager.py` 作为入口，核心逻辑拆到 `runtime/` 模块。
-- 测试覆盖：Task API、DAG、状态机、持久化、验证闭环等共 207 个测试。
+## Why This Exists
+
+Most demo agents stop at chat. This project treats agent work as a task lifecycle:
+
+```text
+create task -> validate input -> run in background -> stream status/logs -> inspect result -> persist history
+```
+
+That makes it easier to connect agents to real product surfaces: desktop apps, internal tools, web apps, mini programs, or company workflow systems.
+
+## Highlights
+
+| Area | What is implemented |
+|---|---|
+| **Desktop workbench** | Electron UI with workspace selection, task list, live logs, result panel, and worker/task controls |
+| **Async task service** | `POST /agent/tasks` returns immediately; `TaskExecutor` runs work in a background thread pool |
+| **Observable runtime** | Task status, progress, logs, result previews, full details, cancellation, and WebSocket updates |
+| **Multi-agent runtime** | Manager + Deputy + 5 workers, verification loop, DAG pipeline, tool permissions, and JSON persistence |
+| **Engineering hygiene** | Modular `runtime/` package, no runtime-to-manager reverse dependency, 207 automated tests |
+
+## How It Works
+
+```mermaid
+flowchart LR
+    UI["Electron Desktop UI"] --> API["FastAPI Server"]
+    App["Web / App / Mini Program"] --> API
+    API --> Store["TaskStore JSON Persistence"]
+    API --> Executor["TaskExecutor Thread Pool"]
+    Executor --> Runtime["Multi-Agent Runtime"]
+    Runtime --> Tools["Local Tools / Workspace"]
+    Runtime --> Verify["Verification + Retry"]
+    Executor --> WS["WebSocket Updates"]
+    WS --> UI
+```
+
+The desktop app and external clients use the same task API. The runtime stays behind the server boundary, so tools, keys, permissions, and logs remain controlled by the backend.
+
+## Quick Start
+
+### 1. Install Python dependencies
+
+```bash
+git clone https://github.com/yangzhengke12-lgtm/local-agent-workbench.git
+cd local-agent-workbench
+
+python -m venv .venv
+.venv\Scripts\activate
+
+pip install -r requirements.txt
+```
+
+### 2. Configure model keys
+
+Create `.env` in the project root:
+
+```env
+ANTHROPIC_API_KEY=your-anthropic-api-key
+ANTHROPIC_BASE_URL=
+ANTHROPIC_MODEL=deepseek-v4-pro
+
+OPENAI_API_KEY=
+OPENAI_BASE_URL=
+```
+
+Only fill the provider you use. `.env` is ignored by git.
+
+### 3. Run the backend
+
+```bash
+python server.py
+```
+
+Open:
+
+```text
+http://localhost:8000
+```
+
+### 4. Run the desktop workbench
+
+```bash
+cd desktop
+npm install
+npm start
+```
+
+The Electron app starts the local FastAPI backend automatically when possible.
+
+## API Example
+
+Create an async task:
+
+```bash
+curl -X POST http://localhost:8000/agent/tasks ^
+  -H "Content-Type: application/json" ^
+  -d "{\"type\":\"worker_task\",\"worker_name\":\"Sophia\",\"description\":\"Review runtime/agent_task.py for API safety issues\"}"
+```
+
+Poll status/logs/result:
+
+```bash
+curl http://localhost:8000/agent/tasks/<task_id>
+curl http://localhost:8000/agent/tasks/<task_id>/logs
+curl http://localhost:8000/agent/tasks/<task_id>/result
+```
+
+For the complete integration guide, see [agent_api.md](agent_api.md).
+
+## API Surface
+
+```text
+GET    /health
+GET    /agent/workspace
+POST   /agent/workspace
+GET    /agent/workers
+POST   /agent/tasks
+GET    /agent/tasks
+GET    /agent/tasks/{task_id}
+GET    /agent/tasks/{task_id}/detail
+GET    /agent/tasks/{task_id}/logs
+GET    /agent/tasks/{task_id}/result
+POST   /agent/tasks/{task_id}/cancel
+WS     /ws
+```
+
+Task types:
+
+```text
+worker_task
+verified_task
+project_pipeline_task
+```
 
 ## Project Structure
 
@@ -38,126 +164,32 @@ local-agent-workbench/
 └── requirements.txt
 ```
 
-## Requirements
+## What Makes It Different From a Simple Agent Script
 
-- Python 3.12+
-- Node.js 18+
-- npm
-- LLM API key, such as `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`
+- It exposes agents as a service, not just a chat loop.
+- It has a task lifecycle: `pending`, `running`, `completed`, `failed`, `cancelled`.
+- It supports long-running work through background execution.
+- It makes logs and results inspectable from UI and API.
+- It keeps external integrations behind tool adapters instead of hardcoding them into prompts.
+- It is local-first by default, which fits private repositories and internal project context.
 
-The desktop app starts the FastAPI backend automatically. You can also run the backend alone for API testing.
+## Safety Boundaries
 
-## Setup
-
-```bash
-git clone https://github.com/<your-name>/local-agent-workbench.git
-cd local-agent-workbench
-
-python -m venv .venv
-.venv\Scripts\activate
-
-pip install -r requirements.txt
-```
-
-Create a `.env` file in the project root:
-
-```env
-ANTHROPIC_API_KEY=your-anthropic-api-key
-ANTHROPIC_BASE_URL=
-ANTHROPIC_MODEL=deepseek-v4-pro
-
-OPENAI_API_KEY=
-OPENAI_BASE_URL=
-```
-
-Only fill the provider you actually use. `.env` is ignored by git.
-
-## Run Backend Only
-
-```bash
-python server.py
-```
-
-Open:
-
-```text
-http://localhost:8000
-```
-
-Useful endpoints:
-
-```text
-GET    /health
-GET    /agent/workers
-POST   /agent/workspace
-POST   /agent/tasks
-GET    /agent/tasks
-GET    /agent/tasks/{task_id}
-GET    /agent/tasks/{task_id}/logs
-GET    /agent/tasks/{task_id}/result
-POST   /agent/tasks/{task_id}/cancel
-WS     /ws
-```
-
-## Run Desktop Workbench
-
-```bash
-cd desktop
-npm install
-npm start
-```
-
-Desktop flow:
-
-1. Choose a local workspace folder.
-2. Select task type and worker.
-3. Submit a task.
-4. Watch logs update in real time.
-5. Inspect final result and artifacts.
-
-The current repository does not include a packaged installer or standalone exe. The desktop app runs in development mode through Electron.
-
-## Example API Request
-
-```bash
-curl -X POST http://localhost:8000/agent/tasks ^
-  -H "Content-Type: application/json" ^
-  -d "{\"type\":\"worker_task\",\"worker_name\":\"Sophia\",\"description\":\"Review runtime/agent_task.py for API safety issues\"}"
-```
-
-Example response:
-
-```json
-{
-  "task_id": "abc123",
-  "status": "pending"
-}
-```
-
-Then poll:
-
-```bash
-curl http://localhost:8000/agent/tasks/abc123
-curl http://localhost:8000/agent/tasks/abc123/logs
-curl http://localhost:8000/agent/tasks/abc123/result
-```
-
-For a complete API walkthrough, see [agent_api.md](agent_api.md).
-
-## Task Types
-
-```text
-worker_task
-verified_task
-project_pipeline_task
-```
-
-Input validation includes:
+Implemented:
 
 - task type whitelist
-- worker name whitelist from `workers.json`
-- non-empty task description
-- no arbitrary shell command endpoint exposed through the task API
+- worker whitelist from `workers.json`
+- non-empty task descriptions
+- API layer does not expose arbitrary shell execution as a public task endpoint
+- runtime tool permissions are controlled per worker
+
+Not included by default:
+
+- public web search
+- production database backend
+- enterprise auth / SSO
+- packaged installer
+- Feishu, Jira, GitLab, SQL, or other company-system adapters
 
 ## Tests
 
@@ -165,7 +197,7 @@ Input validation includes:
 python -m pytest -q
 ```
 
-Expected result:
+Expected:
 
 ```text
 207 passed
@@ -180,24 +212,6 @@ node --check preload.js
 node --check renderer.js
 node --check i18n.js
 ```
-
-## Product Boundary
-
-Current version:
-
-- local-first
-- desktop + API driven
-- suitable for local project analysis, task delegation, logs, results, and workflow demos
-
-Not included by default:
-
-- public web search
-- enterprise SSO
-- production database backend
-- packaged installer
-- external systems such as Feishu, Jira, GitLab, or SQL databases
-
-Those are intended to be added as controlled tool adapters, not hardcoded into the Agent Runtime.
 
 ## License
 
