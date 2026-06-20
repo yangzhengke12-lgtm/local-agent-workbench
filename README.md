@@ -34,7 +34,6 @@ local-agent-workbench/
 │   └── ...
 ├── desktop/                # Electron desktop workbench
 ├── tests/                  # Automated tests
-├── examples/               # Demo scripts
 ├── agent_api.md            # API integration guide
 └── requirements.txt
 ```
@@ -199,14 +198,6 @@ Not included by default:
 - external systems such as Feishu, Jira, GitLab, or SQL databases
 
 Those are intended to be added as controlled tool adapters, not hardcoded into the Agent Runtime.
-
-## Interview Demo
-
-See [examples/demo_task_flow.md](examples/demo_task_flow.md) for a two-minute demo script.
-
-Suggested positioning:
-
-> I built a local-first Agent workbench that turns a multi-agent runtime into a usable task execution service. It supports REST API integration, WebSocket updates, async execution, task persistence, desktop UI, and test coverage. External systems can be added through the tool layer.
 
 ## License
 
