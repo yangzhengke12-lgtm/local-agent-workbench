@@ -1282,7 +1282,13 @@ kbd {
   background: var(--chrome);
   color: var(--text-2);
   font-size: 13px;
+  overflow: hidden;
+  white-space: nowrap;
   transition: padding var(--motion), font-size var(--motion);
+}
+
+#statusbar span {
+  flex: 0 0 auto;
 }
 
 #connection-status {
@@ -1344,8 +1350,10 @@ body.rail-collapsed #log-stream {
 }
 
 body.rail-collapsed #statusbar {
-  padding-left: 18px;
-  font-size: 12px;
+  opacity: 0;
+  pointer-events: none;
+  padding: 0;
+  border-top-color: transparent;
 }
 
 ::-webkit-scrollbar {
