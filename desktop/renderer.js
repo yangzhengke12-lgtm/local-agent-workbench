@@ -13,6 +13,7 @@ var state = {
   lastWsUpdate: {},
   _wsPath: null,
   _connStatus: 'disconnected',
+  _theme: localStorage.getItem('workbench_theme') || 'graphite',
 };
 
 // ═══════════════════════════════════════════════════════
@@ -111,13 +112,19 @@ async function loadWorkspace() {
 function renderWorkspace(wsPath) {
   state._wsPath = wsPath;
   var display = document.getElementById('workspace-display');
+  var tabName = document.getElementById('workspace-tab-name');
   if (wsPath) {
     display.textContent = wsPath;
     display.className = 'set';
     document.getElementById('workspace-input').value = wsPath;
+    if (tabName) {
+      var parts = wsPath.split(/[\\/]/).filter(Boolean);
+      tabName.textContent = parts.length ? parts[parts.length - 1] : 'workspace';
+    }
   } else {
     display.textContent = t('workspace.not_set');
     display.className = '';
+    if (tabName) { tabName.textContent = 'my-agent'; }
   }
 }
 
@@ -178,7 +185,9 @@ async function loadTasks() {
 function renderTaskList() {
   var container = document.getElementById('task-list');
   var count = document.getElementById('task-count');
+  var statusCount = document.getElementById('status-task-count');
   if (count) { count.textContent = String(state.taskOrder.length); }
+  if (statusCount) { statusCount.textContent = String(state.taskOrder.length); }
   if (state.taskOrder.length === 0) {
     container.innerHTML = '<div class="task-list-empty">' + t('task.empty') + '</div>';
     return;
@@ -403,6 +412,7 @@ function escHtml(str) {
 function setConnectionStatus(status) {
   state._connStatus = status;
   var el = document.getElementById('connection-status');
+  if (!el) return;
   if (status === 'connected') {
     el.textContent = t('app.connected');
     el.className = 'connected';
@@ -412,12 +422,25 @@ function setConnectionStatus(status) {
   }
 }
 
+function applyTheme(theme) {
+  state._theme = theme || 'graphite';
+  document.documentElement.setAttribute('data-theme', state._theme);
+  localStorage.setItem('workbench_theme', state._theme);
+  var select = document.getElementById('theme-select');
+  if (select) { select.value = state._theme; }
+  var statusTheme = document.getElementById('status-theme');
+  if (statusTheme) {
+    statusTheme.textContent = state._theme.charAt(0).toUpperCase() + state._theme.slice(1);
+  }
+}
+
 // ═══════════════════════════════════════════════════════
 // Section 9: Init
 // ═══════════════════════════════════════════════════════
 
 function init() {
   // Apply initial translations
+  applyTheme(state._theme);
   refreshAllUI();
 
   var minimizeBtn = document.getElementById('window-minimize');
@@ -437,6 +460,20 @@ function init() {
 
   document.getElementById('workspace-set-btn').addEventListener('click', setWorkspace);
   document.getElementById('create-task-btn').addEventListener('click', createTask);
+  var themeSelect = document.getElementById('theme-select');
+  if (themeSelect) {
+    themeSelect.addEventListener('change', function () { applyTheme(themeSelect.value); });
+  }
+  var quickNew = document.getElementById('quick-new-task');
+  var headerNew = document.getElementById('header-new-task');
+  var tabNew = document.getElementById('new-task-btn');
+  function focusComposer() {
+    var input = document.getElementById('task-description');
+    if (input) { input.focus(); }
+  }
+  if (quickNew) { quickNew.addEventListener('click', focusComposer); }
+  if (headerNew) { headerNew.addEventListener('click', focusComposer); }
+  if (tabNew) { tabNew.addEventListener('click', focusComposer); }
   document.getElementById('task-type').addEventListener('change', updateWorkerAvailability);
   document.getElementById('task-description').addEventListener('keydown', function (e) {
     if (e.key === 'Enter') createTask();
