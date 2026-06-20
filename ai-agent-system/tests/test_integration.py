@@ -42,8 +42,8 @@ class TestIntegration(unittest.TestCase):
 
     # ── test cases ─────────────────────────────────────────────
 
-    @patch("manager._run_verifier")
-    @patch("manager.run_worker")
+    @patch("runtime.verification._run_verifier")
+    @patch("runtime.verification.run_worker")
     def test_delegate_pass_first_try(
         self, mock_worker: MagicMock, mock_verifier: MagicMock
     ) -> None:
@@ -63,8 +63,8 @@ class TestIntegration(unittest.TestCase):
         mock_worker.assert_called_once()
         mock_verifier.assert_called_once()
 
-    @patch("manager._run_verifier")
-    @patch("manager.run_worker")
+    @patch("runtime.verification._run_verifier")
+    @patch("runtime.verification.run_worker")
     def test_delegate_retry_then_pass(
         self, mock_worker: MagicMock, mock_verifier: MagicMock
     ) -> None:
@@ -91,8 +91,8 @@ class TestIntegration(unittest.TestCase):
         self.assertEqual(mock_worker.call_count, 2)
         self.assertEqual(mock_verifier.call_count, 2)
 
-    @patch("manager._run_verifier")
-    @patch("manager.run_worker")
+    @patch("runtime.verification._run_verifier")
+    @patch("runtime.verification.run_worker")
     def test_delegate_max_retries_exceeded(
         self, mock_worker: MagicMock, mock_verifier: MagicMock
     ) -> None:
@@ -115,7 +115,7 @@ class TestIntegration(unittest.TestCase):
         self.assertEqual(mock_worker.call_count, 3)
         self.assertEqual(mock_verifier.call_count, 3)
 
-    @patch("manager.run_worker")
+    @patch("runtime.verification.run_worker")
     def test_delegate_no_verifiers(self, mock_worker: MagicMock) -> None:
         mock_worker.return_value = self._make_success_response()
 
@@ -130,8 +130,8 @@ class TestIntegration(unittest.TestCase):
         self.assertIsNone(result["verification"])
         mock_worker.assert_called_once()
 
-    @patch("manager._run_verifier")
-    @patch("manager.run_worker")
+    @patch("runtime.verification._run_verifier")
+    @patch("runtime.verification.run_worker")
     def test_delegate_budget_exceeded(
         self, mock_worker: MagicMock, mock_verifier: MagicMock
     ) -> None:
@@ -160,8 +160,8 @@ class TestIntegration(unittest.TestCase):
         # reaching verifiers)
         self.assertEqual(mock_verifier.call_count, 1)
 
-    @patch("manager._run_verifier")
-    @patch("manager.run_worker")
+    @patch("runtime.verification._run_verifier")
+    @patch("runtime.verification.run_worker")
     def test_delegate_needs_replan(
         self, mock_worker: MagicMock, mock_verifier: MagicMock
     ) -> None:

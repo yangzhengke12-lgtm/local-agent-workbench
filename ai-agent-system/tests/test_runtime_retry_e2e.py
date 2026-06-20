@@ -33,8 +33,8 @@ class TestRuntimeRetryE2E(unittest.TestCase):
 
     # ── Test 1 ───────────────────────────────────────────────────
 
-    @patch("manager._run_verifier")
-    @patch("manager.run_worker")
+    @patch("runtime.verification._run_verifier")
+    @patch("runtime.verification.run_worker")
     def test_retry_instruction_enters_second_task(
         self, mock_worker: MagicMock, mock_verifier: MagicMock
     ) -> None:
@@ -76,8 +76,8 @@ class TestRuntimeRetryE2E(unittest.TestCase):
 
     # ── Test 2 ───────────────────────────────────────────────────
 
-    @patch("manager._run_verifier")
-    @patch("manager.run_worker")
+    @patch("runtime.verification._run_verifier")
+    @patch("runtime.verification.run_worker")
     def test_max_retries_exceeded(
         self, mock_worker: MagicMock, mock_verifier: MagicMock
     ) -> None:
@@ -105,8 +105,8 @@ class TestRuntimeRetryE2E(unittest.TestCase):
 
     # ── Test 3 ───────────────────────────────────────────────────
 
-    @patch("manager._run_verifier")
-    @patch("manager.run_worker")
+    @patch("runtime.verification._run_verifier")
+    @patch("runtime.verification.run_worker")
     def test_pass_first_try(
         self, mock_worker: MagicMock, mock_verifier: MagicMock
     ) -> None:
@@ -128,8 +128,8 @@ class TestRuntimeRetryE2E(unittest.TestCase):
 
     # ── Test 4 ───────────────────────────────────────────────────
 
-    @patch("manager._run_verifier")
-    @patch("manager.run_worker")
+    @patch("runtime.verification._run_verifier")
+    @patch("runtime.verification.run_worker")
     def test_needs_replan_stops_immediately(
         self, mock_worker: MagicMock, mock_verifier: MagicMock
     ) -> None:
@@ -154,8 +154,8 @@ class TestRuntimeRetryE2E(unittest.TestCase):
 
     # ── Test 5 ───────────────────────────────────────────────────
 
-    @patch("manager._run_verifier")
-    @patch("manager.run_worker")
+    @patch("runtime.verification._run_verifier")
+    @patch("runtime.verification.run_worker")
     def test_verdict_merge_worst_wins(
         self, mock_worker: MagicMock, mock_verifier: MagicMock
     ) -> None:

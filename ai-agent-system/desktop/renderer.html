@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline'; connect-src http://localhost:8000 ws://localhost:8000; font-src 'self' data:;">
+  <title>Agent Desktop Workbench</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Header -->
+    <div id="header">
+      <span class="header-title">&#9881; Agent Desktop Workbench</span>
+      <span id="connection-status">connecting...</span>
+    </div>
+
+    <!-- Left Panel -->
+    <div id="left-panel">
+      <div id="workspace-section">
+        <div class="panel-title">&#128193; Workspace</div>
+        <div id="workspace-display">Not set</div>
+        <div class="workspace-actions">
+          <input type="text" id="workspace-input" placeholder="C:\path\to\project">
+          <button id="workspace-set-btn">Set</button>
+        </div>
+      </div>
+      <div id="task-list-section">
+        <div class="panel-title">&#128203; Tasks</div>
+        <div id="task-list">
+          <div class="task-list-empty">No tasks yet</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Center Panel -->
+    <div id="center-panel">
+      <div id="task-detail-section">
+        <div id="task-detail-header">
+          <div class="placeholder">Select a task to view details</div>
+        </div>
+        <div id="task-progress"></div>
+      </div>
+      <div id="log-section">
+        <div class="panel-title">&#128220; Execution Log</div>
+        <div id="log-stream">
+          <div class="placeholder">Waiting for execution...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right Panel -->
+    <div id="right-panel">
+      <div id="result-section">
+        <div class="panel-title">&#128203; Result</div>
+        <div id="result-content" class="placeholder">No result</div>
+      </div>
+      <div id="artifacts-section">
+        <div class="panel-title">&#128196; Artifacts</div>
+        <div id="artifacts-content" class="placeholder">No artifacts</div>
+      </div>
+    </div>
+
+    <!-- Bottom Bar -->
+    <div id="bottom-bar">
+      <input type="text" id="task-description" placeholder="Describe the task..." autofocus>
+      <select id="task-type">
+        <option value="worker_task">Worker Task</option>
+        <option value="verified_task">Verified Task</option>
+      </select>
+      <select id="task-worker"></select>
+      <button id="create-task-btn" class="btn-primary">Create Task</button>
+    </div>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

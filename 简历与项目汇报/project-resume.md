@@ -4,7 +4,7 @@
 
 ## 技术栈
 
-Python · Anthropic SDK · ThreadPoolExecutor · JSON 驱动配置 · Subprocess 管理
+Python 3.12 · Anthropic SDK · OpenAI SDK · ThreadPoolExecutor · Kahn 算法 · dataclass · JSON 驱动配置 · 4 厂商 LLM 路由（DeepSeek/千问/MiniMax/GPT） · 深模块架构（14 文件，零循环依赖）
 
 ## 搭建过程
 
@@ -24,15 +24,22 @@ Python · Anthropic SDK · ThreadPoolExecutor · JSON 驱动配置 · Subprocess
 
 ## 量化
 
-| 指标 | 数值 |
-|------|------|
-| 智能体 | 7（1 正经理 + 1 副经理 + 5 Worker） |
-| 工具 | 13 Worker 工具 + 13 管理工具 |
-| 代码量 | 900+ 行 Python |
-| 配置文件驱动 | 100%（增删员工、调权限不用改代码） |
+| 指标 | v3 | v4 | v4.3 |
+|------|-----|-----|------|
+| 智能体 | 7 | 9（+2 Verifier） | 9 |
+| 工具 | 26 | 31（+5 v4） | 31 |
+| 代码量 | 900+ 行 | 4126 行 | 732 行 manager + ~3500 行 runtime（14 模块） |
+| 配置文件驱动 | 100% | 100% | 100% |
+| 测试覆盖 | 无 | 77 | **174**（零断言改动） |
+| 循环依赖 | 2 处 lazy import | 2 处 lazy import | **0** |
+| 最大单文件 | 2261 行 | 4126 行 | 645 行（pipeline.py） |
 
 ## 面试可讲的点
 
+- **深模块架构**：把 4126 行巨石拆成 14 个职责清晰的文件，依赖方向严格单向，零循环依赖。面试官 30 秒看懂架构
+- **回调注入解耦**：不用 DI 框架，3 行函数注入解决 tools ↔ workers 循环依赖
+- **懒加载 Provider**：`import manager` 不需要任何 API 密钥，首次调用才初始化
+- **兼容性重导出**：重构 4000 行代码，174 个测试的 import 一行不改全部通过
 - **权限隔离的双保险**：API 层 tools 白名单 + 运行时二次校验，不是 prompt 软约束
 - **单点故障修复**：自研副经理机制，独立分析 + 明确反对 + 替代方案
 - **跨平台编码问题**：Windows GBK → subprocess stdout 崩为 None，独立排查修复

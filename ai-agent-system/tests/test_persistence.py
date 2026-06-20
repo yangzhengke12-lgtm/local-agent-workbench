@@ -100,7 +100,7 @@ class TestPersistence(unittest.TestCase):
         result = load_workflow_run("nonexistent_project")
         self.assertIsNone(result)
 
-    @patch("manager.run_project_pipeline", return_value={"status": "ok"})
+    @patch("runtime.pipeline.run_project_pipeline", return_value={"status": "ok"})
     def test_resume_resets_running_nodes(self, mock_pipeline: MagicMock) -> None:
         run = self._create_sample_run()
         self.assertEqual(run.nodes["node_b"]["status"], "running")

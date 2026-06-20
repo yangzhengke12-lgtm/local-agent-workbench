@@ -128,6 +128,93 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 ---
 
+## v4.3 架构重构：深模块化（2026.06.20）
+
+在 v4 功能交付后，进行了一轮纯架构手术——将 4126 行的单文件 `manager.py` 拆解为 13 个职责清晰的深模块，目标是让面试官 30 秒看懂架构图。
+
+### 重构方案
+
+```
+重构前:  manager.py (4126 行, 75 函数, 所有逻辑混在一起)
+           ↓
+重构后:  manager.py (732 行, -82%)
+         runtime/
+           ├── contracts.py     (99 行)  数据合约：TaskNodeStatus + 5 dataclass
+           ├── sanitize.py      (65 行)  消息清洗：跨 provider 的 thinking/tool 块过滤
+           ├── pure_functions.py(267 行)  纯函数：归一化、合并、预算、产物发现
+           ├── config.py        (120 行)  配置+懒加载 provider 初始化
+           ├── routing.py       (134 行)  复杂度路由：关键词 → 模型选择
+           ├── persistence.py   (304 行)  持久化：会话/看板/知识库/WorkflowRun
+           ├── llm.py           (464 行)  多厂商 LLM 调用：DeepSeek/GPT/MiniMax/千问
+           ├── tools.py         (558 行)  16 个工具执行 + ask_coworker 回调注入
+           ├── workers.py       (323 行)  Worker 执行层：load/run_worker/run_deputy
+           ├── verification.py  (255 行)  验证闭环：Sophia∥Nathaniel → merge → retry
+           ├── pipeline.py      (645 行)  DAG 引擎：Kahn 排序/就绪发现/阻断传播/并发执行
+           └── manager_tools.py (354 行)  24 个 Manager 工具 schema 生成
+```
+
+### 关键设计决策
+
+| 问题 | 方案 | 效果 |
+|------|------|------|
+| 循环依赖 (tools ↔ workers) | 回调注入 `set_coworker_executor(fn)` | 零反向依赖 |
+| runtime → manager 反向引用 | 参数注入 `execute_manager_tool_fn` | runtime 永远不 import manager |
+| `import manager` 缺密钥就崩 | 懒加载 `_init_providers()`，首次调用才建客户端 | import 永远不崩 |
+| 测试 import 路径全部失效 | manager.py 兼容 re-export：`from runtime.xxx import func` | 174 测试断言零改动 |
+| tools.py 预估 970 行偏大 | 拆出 manager_tools.py（354 行）独立管理工具 schema | tools.py 558 行，职责聚焦 |
+
+### 依赖方向（严格单向）
+
+```
+manager.py  ──imports──→  runtime/*
+runtime/*   ──×──→  manager.py   (zero)
+```
+
+模块内部按依赖层次排列：contracts → sanitize → pure_functions → config → routing → persistence → llm → tools → workers → verification → pipeline → manager_tools。
+
+### 重构原则
+
+- **不新增功能，不删除功能**：纯结构变换，行为 100% 保持
+- **搬运顺序严格**：从底层无依赖模块开始，逐层向上
+- **每步验证**：搬一个模块跑一次全量测试，确保 174 测试始终绿色
+- **Git 基线铁律**：每次改动前先 commit，绝不等用户提醒
+
+### 踩坑与修复（重构过程）
+
+**1. `from X import Y` 绑定语义导致测试 patch 失效**
+- 现象：12 个测试报错，patch `manager.run_worker` 无效
+- 根因：Python `from X import Y` 在当前模块创建了 Y 的引用副本。即使 patch 了 X.Y，当前模块的 Y 仍然指向旧对象。函数迁移到 runtime 后，测试需要 patch 消费者模块而非定义模块
+- 修复：将 patch target 从 `manager.run_worker` 改为 `runtime.verification.run_worker`（消费者）
+
+**2. 手术刀误切——持久化 import 块随 tools 段一起删除**
+- 现象：`project_setup` 函数和 persistence 相关 import 在删除 tools 段时被连带移除
+- 修复：逐个还原被误删的 import 块和函数
+
+**3. ThreadPoolExecutor import 被误判为"未使用"**
+- 现象：`roundtable_discuss` 和 `main()` 中并行工具执行依赖 `ThreadPoolExecutor` 和 `as_completed`
+- 修复：补回 `from concurrent.futures import ThreadPoolExecutor, as_completed`
+
+### 量化对比
+
+| 指标 | 重构前 (v4) | 重构后 (v4.3) |
+|------|------------|--------------|
+| manager.py 行数 | 2261 → 3263 (+v4) → 4126 | **732** |
+| 模块数 | 1 | **14**（1 manager + 13 runtime） |
+| 最大单文件 | 4126 行 | 645 行（pipeline.py） |
+| 循环依赖 | 2 处 lazy import 绕过 | **0** |
+| 测试通过 | 77 | **174**（零断言改动） |
+| import 副作用 | 缺密钥即崩 | **懒加载，永无副作用** |
+
+### 面试可讲的点
+
+- **深模块设计**：每个模块有清晰的"做什么、依赖谁、被谁依赖"，面试官可以 30 秒看懂架构
+- **回调注入解耦**：不用 DI 框架，用 3 行代码的函数注入解决 tools ↔ workers 循环依赖
+- **懒加载 Provider**：`import manager` 不需要任何 API 密钥，首次调用才初始化客户端
+- **兼容 re-export**：重构 4000 行代码，174 个测试的 import 路径一个不用改
+- **Python 模块绑定语义**：深刻理解 `from X import Y` 的内存模型，patch 测试要 patch 消费者而非定义者
+
+---
+
 ## 后续迭代方向（v5+）
 
 - Human Control Plane（Web Dashboard + 暂停/恢复/审批）

@@ -676,7 +676,7 @@ class TestVerifierNeverReturnsNA(unittest.TestCase):
 class TestVerifierExceptionHandling(unittest.TestCase):
     """_run_verifier 在 run_worker 抛异常时必须返回 fallback。"""
 
-    @patch("manager.run_worker")
+    @patch("runtime.verification.run_worker")
     def test_verifier_returns_fallback_on_exception(self, mock_run):
         """run_worker 抛异常 → _run_verifier 返回 needs_retry fallback。"""
         mock_run.side_effect = RuntimeError("API connection timeout")
@@ -687,7 +687,7 @@ class TestVerifierExceptionHandling(unittest.TestCase):
         self.assertEqual(result.verdict, "needs_retry")
         self.assertTrue(len(result.blocking_issues) > 0)
 
-    @patch("manager.run_worker")
+    @patch("runtime.verification.run_worker")
     def test_verifier_returns_fallback_on_empty_result(self, mock_run):
         """run_worker 返回空 result → _run_verifier 返回 fallback。"""
         mock_run.return_value = {"result": "", "log": []}
@@ -698,7 +698,7 @@ class TestVerifierExceptionHandling(unittest.TestCase):
         self.assertEqual(result.verdict, "needs_retry")
         self.assertTrue(len(result.blocking_issues) > 0)
 
-    @patch("manager.run_worker")
+    @patch("runtime.verification.run_worker")
     def test_verifier_returns_fallback_on_non_dict_return(self, mock_run):
         """run_worker 返回非 dict → _run_verifier 返回 fallback。"""
         mock_run.return_value = "not a dict"

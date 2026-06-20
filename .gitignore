@@ -6,9 +6,16 @@ __pycache__/
 .codex/
 project_states/
 worker_sessions.json
+agent_tasks.json
+chat_history.json
 *.output
 .pytest_cache/
 _gen_docx.py
 ArcGIS-Pro-Bridge-MCP-Server
 .codegraph/
 fastapi-crud-test/
+
+# Electron / Desktop
+node_modules/
+dist/
+package-lock.json
