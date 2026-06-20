@@ -12,7 +12,7 @@
  * Electron 会降级为纯 Node.js 运行时，导致 require("electron") 失败。
  * 启动前确保该变量未设置。
  */
-const { app, BrowserWindow, dialog, ipcMain } = require('electron');
+const { app, BrowserWindow, Menu, dialog, ipcMain } = require('electron');
 const { spawn } = require('child_process');
 const http = require('http');
 const path = require('path');
@@ -179,6 +179,8 @@ function createWindow() {
     minHeight: 700,
     title: 'Agent Desktop Workbench',
     frame: false,
+    titleBarStyle: 'hidden',
+    autoHideMenuBar: true,
     backgroundColor: '#0f141b',
     webPreferences: {
       nodeIntegration: false,
@@ -202,6 +204,8 @@ function createWindow() {
 // ── 应用生命周期 ──
 app.whenReady().then(async () => {
   try {
+    Menu.setApplicationMenu(null);
+
     // 1. 检测端口
     const portFree = await checkPort(PORT);
 
