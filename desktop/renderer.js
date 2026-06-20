@@ -23,7 +23,7 @@ var state = {
   _taskEvents: {},
   _memory: null,
   _rules: null,
-  _tokenBudget: 32000,
+  _tokenBudget: 1000000,
   _estimatedTokens: 0,
 };
 
@@ -747,10 +747,10 @@ function updateContextMeter() {
   var percent = document.getElementById('context-token-percent');
   var source = document.getElementById('context-token-source');
   var status = document.getElementById('status-token-count');
-  if (value) value.textContent = formatTokenCount(tokens) + ' / 32k';
+  if (value) value.textContent = formatTokenCount(tokens) + ' / 1M';
   if (fill) fill.style.width = Math.max(2, pct) + '%';
   if (percent) percent.textContent = pct + '%';
-  if (source) source.textContent = state.selectedTaskId ? 'est. selected task context' : 'est. workspace context';
+  if (source) source.textContent = state.selectedTaskId ? 'est. selected task context · window 1M' : 'est. workspace context · window 1M';
   if (status) status.textContent = 'tokens ' + formatTokenCount(tokens);
 }
 
