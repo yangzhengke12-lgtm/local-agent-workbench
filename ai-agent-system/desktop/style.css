@@ -67,12 +67,36 @@ body {
   letter-spacing: 0.5px;
 }
 
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+#lang-select {
+  font-size: 11px;
+  padding: 4px 8px;
+  border: 1px solid rgba(255,255,255,0.25);
+  border-radius: 4px;
+  background: rgba(255,255,255,0.1);
+  color: white;
+  cursor: pointer;
+  outline: none;
+  font-family: var(--font);
+}
+
+#lang-select option {
+  color: var(--text);
+  background: white;
+}
+
 #connection-status {
   font-size: 11px;
   opacity: 0.8;
   padding: 4px 12px;
   border-radius: 12px;
   background: rgba(255,255,255,0.15);
+  white-space: nowrap;
 }
 
 #connection-status.connected {
