@@ -1,0 +1,17 @@
+[     531ms] [ERROR] Failed to load resource: the server responded with a status of 404 (File not found) @ http://127.0.0.1:8765/favicon.ico:0
+[    2851ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8000/agent/workspace:0
+[    2851ms] [WARNING] API GET error: /agent/workspace | Failed to fetch @ http://127.0.0.1:8765/renderer.js:27
+[    2851ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8000/agent/workers:0
+[    2851ms] [WARNING] API GET error: /agent/workers | Failed to fetch @ http://127.0.0.1:8765/renderer.js:27
+[    2851ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8000/agent/tasks?limit=100:0
+[    2851ms] [WARNING] API GET error: /agent/tasks?limit=100 | Failed to fetch @ http://127.0.0.1:8765/renderer.js:27
+[    2852ms] [ERROR] WebSocket connection to 'ws://localhost:8000/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8765/renderer.js:60
+[    6176ms] [ERROR] WebSocket connection to 'ws://localhost:8000/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8765/renderer.js:60
+[   10013ms] [ERROR] WebSocket connection to 'ws://localhost:8000/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8765/renderer.js:60
+[   12857ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8000/agent/tasks?limit=100:0
+[   12857ms] [WARNING] API GET error: /agent/tasks?limit=100 | Failed to fetch @ http://127.0.0.1:8765/renderer.js:27
+[   14604ms] [ERROR] WebSocket connection to 'ws://localhost:8000/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8765/renderer.js:60
+[   20329ms] [ERROR] WebSocket connection to 'ws://localhost:8000/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8765/renderer.js:60
+[   22847ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8000/agent/tasks?limit=100:0
+[   22847ms] [WARNING] API GET error: /agent/tasks?limit=100 | Failed to fetch @ http://127.0.0.1:8765/renderer.js:27
+[   27723ms] [ERROR] WebSocket connection to 'ws://localhost:8000/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8765/renderer.js:60

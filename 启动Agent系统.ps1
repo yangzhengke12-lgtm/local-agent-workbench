@@ -4,7 +4,7 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $env:PYTHONUTF8 = "1"
 $env:PYTHONIOENCODING = "utf-8"
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$ManagerDir = Join-Path $Root "AI-Agent管理系统"
+$ServerDir = Join-Path $Root "ai-agent-system"
 
 # Find Python
 $Python = $null
@@ -25,15 +25,15 @@ if (Test-Path $VenvPath) {
     exit 1
 }
 
-Set-Location $ManagerDir
+Set-Location $ServerDir
 
 Write-Host "============================================================" -ForegroundColor Cyan
 Write-Host "  AI-Agent Management System v4" -ForegroundColor Cyan
-Write-Host "  Starting..." -ForegroundColor Cyan
+Write-Host "  Starting server.py..." -ForegroundColor Cyan
 Write-Host "============================================================" -ForegroundColor Cyan
 Write-Host ""
 
-& $Python manager.py
+& $Python server.py
 
 Write-Host ""
 Read-Host "Press Enter to exit"

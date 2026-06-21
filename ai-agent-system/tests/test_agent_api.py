@@ -1,6 +1,7 @@
 """Agent Task API 测试 —— HTTP 接口 + 数据模型 + 验证逻辑。"""
 import os
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch, MagicMock
 
@@ -18,8 +19,11 @@ from runtime.agent_task import (
     TaskValidationError,
     validate_create_task,
     _generate_task_id,
+    _extract_project_name_from_setup_result,
     VALID_TASK_TYPES,
 )
+from runtime.config import MissingProviderClient, get_default_client
+import server
 
 client = TestClient(app)
 
@@ -65,6 +69,23 @@ class TestTaskDataModel(unittest.TestCase):
         # 不应抛异常
         s = json.dumps(d, ensure_ascii=False, default=str)
         self.assertIn("task_json_001", s)
+
+    def test_extract_project_name_from_real_setup_report(self):
+        report = """
+=======================================================
+  项目分工表: TodoWorkbench
+=======================================================
+
+[Pipeline 步骤]
+  [ ] 实现接口: ...
+
+状态文件: project_states/TodoWorkbench_state.json
+=======================================================
+"""
+        self.assertEqual(
+            _extract_project_name_from_setup_result(report),
+            "TodoWorkbench",
+        )
 
 
 class TestInputValidation(unittest.TestCase):
@@ -154,7 +175,12 @@ class TestTaskAPI(unittest.TestCase):
         # project_pipeline_task 需要 mock project_setup + run_project_pipeline
         cls._proj_setup_patcher = patch("runtime.pipeline.project_setup")
         cls.mock_proj_setup = cls._proj_setup_patcher.start()
-        cls.mock_proj_setup.return_value = {"project_name": "test_project", "steps": []}
+        cls.mock_proj_setup.return_value = (
+            "\n=======================================================\n"
+            "  项目分工表: test_project\n"
+            "=======================================================\n"
+            "\n状态文件: project_states/test_project_state.json\n"
+        )
 
         cls._pipeline_patcher = patch("runtime.pipeline.run_project_pipeline")
         cls.mock_pipeline = cls._pipeline_patcher.start()
@@ -169,6 +195,27 @@ class TestTaskAPI(unittest.TestCase):
         cls._verified_patcher.stop()
         cls._proj_setup_patcher.stop()
         cls._pipeline_patcher.stop()
+
+    def setUp(self):
+        self._settings_file = server._settings_path()
+        self._settings_file_existed = os.path.exists(self._settings_file)
+        self._settings_file_content = None
+        if self._settings_file_existed:
+            with open(self._settings_file, "r", encoding="utf-8") as f:
+                self._settings_file_content = f.read()
+        self._runtime_settings = dict(server.runtime_settings)
+        self._current_workspace = dict(server._current_workspace)
+
+    def tearDown(self):
+        server.runtime_settings.clear()
+        server.runtime_settings.update(self._runtime_settings)
+        server._current_workspace.clear()
+        server._current_workspace.update(self._current_workspace)
+        if self._settings_file_existed:
+            with open(self._settings_file, "w", encoding="utf-8") as f:
+                f.write(self._settings_file_content or "")
+        elif os.path.exists(self._settings_file):
+            os.remove(self._settings_file)
 
     def test_create_worker_task_returns_task_id(self):
         resp = client.post("/agent/tasks", json={
@@ -357,6 +404,141 @@ class TestTaskAPI(unittest.TestCase):
             "worker_name": "Alex",
         })
         self.assertGreaterEqual(resp.status_code, 400)
+
+    def test_workspace_file_list_and_preview(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "README.md"), "w", encoding="utf-8") as f:
+                f.write("# demo\nhello")
+            os.makedirs(os.path.join(tmp, "node_modules"))
+            with open(os.path.join(tmp, "node_modules", "hidden.js"), "w", encoding="utf-8") as f:
+                f.write("hidden")
+
+            resp = client.post("/agent/workspace", json={"path": tmp})
+            self.assertEqual(resp.status_code, 200, resp.text)
+
+            files = client.get("/agent/workspace/files")
+            self.assertEqual(files.status_code, 200, files.text)
+            names = [entry["name"] for entry in files.json()["entries"]]
+            self.assertIn("README.md", names)
+            self.assertNotIn("node_modules", names)
+
+            preview = client.get("/agent/workspace/file", params={"path": "README.md"})
+            self.assertEqual(preview.status_code, 200, preview.text)
+            data = preview.json()
+            self.assertTrue(data["previewable"])
+            self.assertEqual(data["relative_path"], "README.md")
+            self.assertIn("hello", data["content"])
+
+    def test_workspace_file_rejects_path_escape(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            client.post("/agent/workspace", json={"path": tmp})
+            resp = client.get("/agent/workspace/files", params={"path": "../"})
+            self.assertEqual(resp.status_code, 403, resp.text)
+
+    def test_workspace_binary_preview_returns_reason(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "data.bin"), "wb") as f:
+                f.write(b"\x00\x01\x02abc")
+            client.post("/agent/workspace", json={"path": tmp})
+            resp = client.get("/agent/workspace/file", params={"path": "data.bin"})
+            self.assertEqual(resp.status_code, 200, resp.text)
+            data = resp.json()
+            self.assertFalse(data["previewable"])
+            self.assertIn("二进制", data["reason"])
+
+    def test_task_events_parse_tool_logs(self):
+        tid = _generate_task_id()
+        task = AgentTask(
+            task_id=tid,
+            type="worker_task",
+            description="events 测试",
+            worker_name="Alex",
+            logs=[
+                '[2026-01-01 10:00:00] [工具: read_file({"file_path":"README.md"})]',
+                "[2026-01-01 10:00:01] [工具返回: hello]",
+                "[2026-01-01 10:00:02] 异常: boom",
+            ],
+        )
+        TaskStore.save(task)
+        resp = client.get(f"/agent/tasks/{tid}/events")
+        self.assertEqual(resp.status_code, 200, resp.text)
+        events = resp.json()["events"]
+        self.assertEqual(events[0]["type"], "tool_call")
+        self.assertEqual(events[0]["tool_name"], "read_file")
+        self.assertEqual(events[0]["args"]["file_path"], "README.md")
+        self.assertEqual(events[1]["type"], "tool_result")
+        self.assertEqual(events[2]["type"], "error")
+
+    def test_memory_and_rules_have_stable_shape(self):
+        memory = client.get("/agent/memory")
+        self.assertEqual(memory.status_code, 200, memory.text)
+        memory_data = memory.json()
+        self.assertIn("sessions", memory_data)
+        self.assertIn("knowledge", memory_data)
+        self.assertIn("project_states", memory_data)
+
+        rules = client.get("/agent/rules")
+        self.assertEqual(rules.status_code, 200, rules.text)
+        rules_data = rules.json()
+        self.assertIn("task_types", rules_data)
+        self.assertIn("workers", rules_data)
+        self.assertIn("dangerous_tools", rules_data)
+
+    def test_health_identifies_project_runtime(self):
+        resp = client.get("/health")
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()
+        self.assertEqual(data["app"], "local-agent-workbench")
+        self.assertIn("project_dir", data)
+        self.assertTrue(os.path.isdir(data["project_dir"]))
+
+    def test_settings_endpoint_returns_runtime_status_without_keys(self):
+        resp = client.get("/agent/settings")
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()
+        self.assertIn("settings", data)
+        self.assertIn("schema", data)
+        self.assertIn("runtime", data)
+        self.assertIn("providers", data["runtime"])
+        self.assertNotIn("test-dummy-key", resp.text)
+        self.assertNotIn("sk-", resp.text)
+
+    def test_settings_patch_rejects_unknown_fields(self):
+        resp = client.patch("/agent/settings", json={"api_key": "should-not-save"})
+        self.assertEqual(resp.status_code, 422, resp.text)
+
+    def test_settings_patch_persists_workspace(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            resp = client.patch("/agent/settings", json={
+                "workspace_path": tmp,
+                "default_task_type": "verified_task",
+                "theme": "blue",
+                "refresh_interval_sec": 7,
+            })
+            self.assertEqual(resp.status_code, 200, resp.text)
+            data = resp.json()
+            self.assertEqual(data["settings"]["workspace_path"], os.path.abspath(tmp))
+            self.assertEqual(data["settings"]["default_task_type"], "verified_task")
+            self.assertEqual(server._current_workspace["path"], os.path.abspath(tmp))
+
+            workspace = client.get("/agent/workspace")
+            self.assertEqual(workspace.json()["workspace"], os.path.abspath(tmp))
+
+    def test_missing_default_client_fails_only_on_call(self):
+        import runtime.config as cfg
+        old_key = cfg.DEEPSEEK_API_KEY
+        old_providers = dict(cfg.PROVIDERS)
+        try:
+            cfg.DEEPSEEK_API_KEY = ""
+            cfg.PROVIDERS.clear()
+            client_obj = get_default_client()
+            self.assertIsInstance(client_obj, MissingProviderClient)
+            with self.assertRaises(RuntimeError):
+                client_obj.messages.create(model="x", messages=[])
+        finally:
+            cfg.DEEPSEEK_API_KEY = old_key
+            cfg.PROVIDERS.clear()
+            cfg.PROVIDERS.update(old_providers)
 
 
 class TestTaskPersistence(unittest.TestCase):

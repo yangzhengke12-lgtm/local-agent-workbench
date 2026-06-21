@@ -1,216 +1,497 @@
-# Multi-Agent 层级协作系统 v4.3
+# Local Agent Workbench
 
-**异步 Agent 执行后端 —— 可被 Web / App / 小程序接入**
+[中文](#中文) | [English](#english)
 
-[![Tests](https://img.shields.io/badge/tests-206%20passed-green)](.)
+---
+
+## 中文
+
+**本地优先的多 Agent 桌面工作台：把 Agent 从“聊天脚本”变成可观测、可接入、可异步执行的任务流服务。**
+
+Local Agent Workbench 基于 FastAPI + Electron 构建，既可以通过桌面端操作，也可以通过标准 REST/WebSocket API 接入。它面向本地代码仓库、私有项目上下文、任务日志、结果检查和受控工具调用。
+
+[![Tests](https://img.shields.io/badge/tests-217%20passed-green)](.)
 [![Python](https://img.shields.io/badge/python-3.12-blue)](.)
-[![Arch](https://img.shields.io/badge/arch-14%20modules%20zero%20circular%20deps-success)](.)
+[![FastAPI](https://img.shields.io/badge/backend-FastAPI-009688)](.)
+[![Electron](https://img.shields.io/badge/desktop-Electron-47848F)](.)
 
-## 一句话
+> 当前定位：本地项目工作台。联网搜索、企业 SSO、安装包、飞书/Jira/GitLab/数据库等外部系统，适合作为后续 tool/provider adapter 接入。
 
-不是"一个 Agent 对话机器人"，而是**把多 Agent  Runtime 封装成了标准异步任务服务**：
-前端通过 REST API 提交需求 → 后端线程池异步执行 Agent 工作流 → 轮询/WebSocket 返回进度、日志和结果。
+### 为什么做这个
 
-## 架构图
+很多 Agent demo 停留在对话层；这个项目把 Agent 工作抽象成可追踪的任务生命周期：
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                   App / 小程序 / Web                      │
-│              POST /agent/tasks  ·  WebSocket              │
-└──────────────┬──────────────────────────┬────────────────┘
-               │                          │
-               ▼                          ▼
-┌──────────────────────────────────────────────────────────┐
-│                   server.py (FastAPI)                     │
-│   ┌─────────────┐  ┌──────────────┐  ┌────────────────┐ │
-│   │ 聊天室 /ws   │  │ Agent Task   │  │ 文件上传 /upload│ │
-│   │ (WebSocket)  │  │ API (REST)   │  │                │ │
-│   └─────────────┘  └──────┬───────┘  └────────────────┘ │
-│                           │                              │
-│                    ┌──────▼────────┐                     │
-│                    │  TaskExecutor  │                     │
-│                    │ (线程池, 4workers)│                  │
-│                    └──────┬────────┘                     │
-└───────────────────────────┼──────────────────────────────┘
-                            │
-┌───────────────────────────┼──────────────────────────────┐
-│                   manager.py (732 行)                     │
-│   ┌───────────────────────▼──────────────────────────┐   │
-│   │                runtime/ (13 modules)               │   │
-│   │                                                   │   │
-│   │  contracts.py  →  sanitize.py  →  pure_functions  │   │
-│   │       ↓               ↓               ↓           │   │
-│   │  config.py  →  routing.py  →  persistence.py     │   │
-│   │       ↓               ↓               ↓           │   │
-│   │  llm.py  →  tools.py  →  workers.py  →  verif... │   │
-│   │       ↓               ↓               ↓           │   │
-│   │  pipeline.py  →  manager_tools.py                 │   │
-│   │       ↓               ↓                           │   │
-│   │  agent_task.py (Task API 层)                       │   │
-│   └───────────────────┬───────────────────────────────┘   │
-└───────────────────────┼───────────────────────────────────┘
-                        │
-         ┌──────────────┼──────────────┐
-         ▼              ▼              ▼
-   ┌──────────┐  ┌──────────┐  ┌──────────┐
-   │ DeepSeek │  │ MiniMax  │  │ GPT 中转  │
-   │ v4-pro   │  │  M2.7    │  │  5.4/5.5  │
-   └──────────┘  └──────────┘  └──────────┘
+```text
+create task -> validate input -> run in background -> stream status/logs -> inspect result -> persist history
 ```
 
-**依赖方向严格单向**：`manager.py → runtime/*`，`runtime/*` 零条反向引用。
+这样 Agent 更容易接入真实产品界面：桌面端、内部工具、Web 应用、小程序或公司业务系统。
 
-## 快速启动
+### 项目亮点
+
+| 模块 | 已实现能力 |
+|---|---|
+| **桌面工作台** | Electron UI，支持工作区选择、真实设置中心、任务列表、实时日志、结果面板、Worker/任务类型控制 |
+| **异步任务服务** | `POST /agent/tasks` 立即返回 `task_id`，后台线程池执行任务 |
+| **可观测运行时** | 任务状态、进度、日志、结果预览、完整详情、取消任务、WebSocket 推送 |
+| **多 Agent Runtime** | Manager + Deputy + 5 Workers，验证闭环、DAG Pipeline、工具权限、JSON 持久化 |
+| **设置与启动稳定性** | `/agent/settings` 持久化工作区和默认任务偏好；Electron 校验后端项目目录，避免误连旧服务 |
+| **工程化质量** | `runtime/` 模块化拆分，无 runtime 到 manager 的反向依赖，217 个自动化测试 |
+
+### 架构
+
+```mermaid
+flowchart LR
+    UI["Electron Desktop UI"] --> API["FastAPI Server"]
+    App["Web / App / Mini Program"] --> API
+    API --> Store["TaskStore JSON Persistence"]
+    API --> Executor["TaskExecutor Thread Pool"]
+    Executor --> Runtime["Multi-Agent Runtime"]
+    Runtime --> Tools["Local Tools / Workspace"]
+    Runtime --> Verify["Verification + Retry"]
+    Executor --> WS["WebSocket Updates"]
+    WS --> UI
+```
+
+桌面端和外部客户端共用同一套任务 API。Agent Runtime 被放在服务端边界之后，工具、密钥、权限和日志都由后端统一控制。
+
+### 快速启动
+
+安装 Python 依赖：
 
 ```bash
-# 1. 安装依赖
-pip install fastapi uvicorn anthropic openai python-docx
+git clone https://github.com/yangzhengke12-lgtm/local-agent-workbench.git
+cd local-agent-workbench
 
-# 2. 配置 API 密钥（.env 或环境变量）
-#    至少需要 ANTHROPIC_API_KEY（DeepSeek via Anthropic SDK）
-export ANTHROPIC_API_KEY=sk-your-key-here
+python -m venv .venv
+.venv\Scripts\activate
 
-# 3. 启动
-cd ai-agent-system
+pip install -r requirements.txt
+```
+
+复制环境变量模板：
+
+```bash
+copy .env.example .env
+```
+
+打开 `.env`，只填写你实际使用的模型 provider。桌面端可以在没有 key 时启动，但真实 LLM 任务需要至少一个可用 provider：
+
+```env
+ANTHROPIC_API_KEY=
+ANTHROPIC_BASE_URL=
+DASHSCOPE_API_KEY=
+MINIMAX_API_KEY=
+OPENAI_API_KEY=
+OPENAI_BASE_URL=
+```
+
+`.env` 已被 git 忽略，不会提交到仓库。设置页只展示 provider 是否已配置，不会保存或显示 API key 原文。
+
+启动后端：
+
+```bash
 python server.py
-# → http://localhost:8000
-# → 聊天室: http://localhost:8000
-# → WebSocket: ws://localhost:8000/ws
-# → API 文档: agent_api.md
 ```
 
-## Desktop Workbench (本地 Agent 工作台) <sup>new</sup>
+打开：
 
-Electron 桌面应用，提供 4 面板任务管理界面。桌面端负责 workspace、任务管理和交互，后端负责异步 Agent 执行。
+```text
+http://localhost:8000
+```
 
-### 启动
+启动桌面工作台：
 
 ```bash
-# 1. 安装 Electron（首次）
-cd ai-agent-system/desktop
+cd desktop
 npm install
-
-# 2. 启动桌面应用
 npm start
-# Electron 自动启动 Python 后端（server.py），无需手动运行
-# 若后端已在 8000 端口运行，Electron 自动复用
 ```
 
-### 4 面板布局
+Electron 会尽量自动启动本地 FastAPI 后端；如果 8000 端口已有后端运行，会复用现有服务。
 
-| 面板 | 位置 | 功能 |
-|------|------|------|
-| **Workspace + Task List** | 左侧 (280px) | 选择/切换本地项目目录；任务列表带状态色点指示 |
-| **Task Detail + Log** | 中央 (flex) | 任务详情头 + 实时执行日志流（深色终端风格） |
-| **Result + Artifacts** | 右侧 (300px) | 结果展示 + 产物文件列表 |
-| **Input Bar** | 底部 (64px) | 任务描述 + type 选择 + worker 选择 + Create 按钮 |
+桌面端启动时会校验 `/health` 返回的 `project_dir`。如果 8000 端口被另一个项目的旧后端占用，应用会给出明确错误，而不是误连到旧服务。
 
-UI 与 WebSocket 实时联动：任务状态变化 → `agent_task_update` 推送 → 4 面板即时刷新。
+### 桌面设置中心
 
-### 工作台架构
+左下角点击「设置」或使用 `Ctrl+,` 可以打开桌面设置中心。当前真实可保存的设置包括：
 
-```
-┌──────────────────────────────────────────┐
-│          Electron Main Process            │
-│  ┌────────────────────────────────────┐  │
-│  │  python server.py (child_process)   │  │
-│  │  FastAPI :8000 + WebSocket          │  │
-│  └────────────────────────────────────┘  │
-│  ┌────────────────────────────────────┐  │
-│  │  BrowserWindow                      │  │
-│  │  renderer.html + renderer.js        │  │
-│  │  (vanilla HTML/CSS/JS, 零框架)      │  │
-│  └────────────────────────────────────┘  │
-└──────────────────────────────────────────┘
-```
+- 工作区目录
+- 主题颜色
+- 中文 / English
+- 默认任务类型
+- 默认 Worker
+- 左侧栏默认展开状态
+- 任务列表刷新间隔
 
-## 核心能力
+模型、Provider、Worker 工具权限、危险工具、记忆文件路径等会以只读方式展示真实运行时状态。首版不在设置页写入 API key，也不提供看起来能改但实际不生效的假开关。
 
-| 层 | 能力 | 说明 |
-|----|------|------|
-| **Agent Runtime** | 7 智能体团队 | Manager + Deputy + 5 Workers（各司其职） |
-| | 16 工具 + 24 管理工具 | 文件读写、代码搜索、GitHub、文档转换 |
-| | 4 厂商 LLM 路由 | DeepSeek → MiniMax → GPT 自动回退 |
-| | DAG Pipeline | Kahn 拓扑排序 + 并行执行 + 阻断传播 |
-| | 验证闭环 | Sophia∥Nathaniel → merge verdict → auto retry |
-| | 持久化恢复 | WorkflowRun JSON，中断可恢复 |
-| **工程架构** | 深模块化 | 14 文件，零循环依赖 |
-| | 懒加载 Provider | `import manager` 不需要 API 密钥 |
-| | 兼容性极强 | 重构 4000 行，174 测试一行不改全部通过 |
-| **产品接入** | 异步任务 API | `POST /agent/tasks` → task_id → 轮询 / WebSocket |
-| | 3 种任务类型 | worker_task / verified_task / project_pipeline_task |
-| | 任务生命周期 | pending → running → completed / failed / cancelled |
-| | 实时推送 | WebSocket `agent_task_update` |
-| | 零外部依赖 | 无数据库、无 Redis、无 Celery |
+### API 示例
 
-## 项目结构
+创建异步任务：
 
-```
-ai-agent-system/
-├── manager.py              # 入口（732 行，re-export runtime 模块）
-├── server.py               # FastAPI + WebSocket + Task API（~400 行）
-├── workers.json            # Worker 配置（零代码改团队）
-├── chat.html               # 聊天室前端
-│
-├── runtime/                # 深模块层（13 文件，~3500 行）
-│   ├── contracts.py        #   数据合约（TaskNodeStatus + 5 dataclass）
-│   ├── sanitize.py         #   消息净化（跨 provider thinking 块过滤）
-│   ├── pure_functions.py   #   纯函数（归一化/合并/预算/产物）
-│   ├── config.py           #   懒加载 provider 配置
-│   ├── routing.py          #   复杂度路由
-│   ├── persistence.py      #   持久化（会话/看板/知识库/WorkflowRun）
-│   ├── llm.py              #   多厂商 LLM 调用层
-│   ├── tools.py            #   16 工具 + ask_coworker 回调注入
-│   ├── workers.py          #   Worker 执行层
-│   ├── verification.py     #   验证闭环（Sophia∥Nathaniel）
-│   ├── pipeline.py         #   DAG 引擎（Kahn/并行/阻断/恢复）
-│   ├── manager_tools.py    #   24 Manager 工具 schema
-│   └── agent_task.py       #   Task API 层（数据模型/持久化/执行器）
-│
-├── tests/                  # 206 测试（10 文件）
-│   ├── test_agent_api.py   #   Task API 测试（32 个）
-│   ├── test_schema.py      #   归一化函数测试
-│   ├── test_state_machine.py # 状态机转移测试
-│   ├── test_dag_engine.py  #   DAG 拓扑/阻断测试
-│   ├── test_budget.py      #   预算熔断测试
-│   ├── test_persistence.py #   持久化往返测试
-│   ├── test_integration.py #   验证闭环集成测试
-│   └── ...
-│
-├── agent_api.md            # App/小程序接入指南
-├── examples/               # Demo 示例
-├── desktop/                # Electron 桌面工作台
-│   ├── main.js             #   主进程（启动后端 + 窗口管理）
-│   ├── renderer.html       #   4 面板 UI 结构
-│   ├── renderer.js         #   UI 逻辑（~300 行 vanilla JS）
-│   ├── style.css           #   样式（对齐 chat.html 色板）
-│   └── package.json        #   Electron 项目配置
-└── agent_tasks.json        # 任务持久化（自动生成）
+```bash
+curl -X POST http://localhost:8000/agent/tasks ^
+  -H "Content-Type: application/json" ^
+  -d "{\"type\":\"worker_task\",\"worker_name\":\"Sophia\",\"description\":\"Review runtime/agent_task.py for API safety issues\"}"
 ```
 
-## 团队
+查询状态、日志和结果：
 
-| 成员 | 角色 | 工具数 |
-|------|------|--------|
-| **Manager** | 技术总监 · 任务调度 | 24 |
-| **Victor** | 副经理 · 决策复核 | — |
-| **Alex** | 高级开发 · 架构/PR | 11 |
-| **Sophia** | 代码审查 · 安全审计 | 8 |
-| **Marcus** | DevOps · CI/CD | 11 |
-| **Elena** | 技术写作 · 文档 | 8 |
-| **Nathaniel** | 测试工程 · 覆盖率 | 8 |
+```bash
+curl http://localhost:8000/agent/tasks/<task_id>
+curl http://localhost:8000/agent/tasks/<task_id>/logs
+curl http://localhost:8000/agent/tasks/<task_id>/result
+```
 
-## 版本演进
+完整 API 接入说明见 [agent_api.md](agent_api.md)。
 
-| 版本 | 核心变化 |
-|------|----------|
-| v1 | 单 Agent，跑通 DeepSeek API |
-| v2 | Manager + 5 Worker 分层，workers.json 配置驱动 |
-| v3 | 4 厂商 LLM 路由，成本优化，项目动态分工 |
-| v4 | 状态机 + DAG Pipeline + 验证闭环 + 持久化恢复 |
-| v4.3 | **深模块架构重构**（14 文件零循环依赖）+ **Task API**（异步任务服务） |
-| v4.4 | **Desktop Workbench**（Electron 桌面工作台 + 4 面板 UI + workspace 管理） |
+如果要接入企业知识库、飞书、Jira、GitLab、数据库或内部 API，请看 [docs/integration_guide.md](docs/integration_guide.md)。
 
-## License
+### API 接口
+
+```text
+GET    /health
+GET    /agent/workspace
+POST   /agent/workspace
+GET    /agent/workers
+GET    /agent/settings
+PATCH  /agent/settings
+GET    /agent/runtime
+POST   /agent/tasks
+GET    /agent/tasks
+GET    /agent/tasks/{task_id}
+GET    /agent/tasks/{task_id}/detail
+GET    /agent/tasks/{task_id}/logs
+GET    /agent/tasks/{task_id}/result
+POST   /agent/tasks/{task_id}/cancel
+WS     /ws
+```
+
+任务类型：
+
+```text
+worker_task
+verified_task
+project_pipeline_task
+```
+
+### 项目结构
+
+```text
+local-agent-workbench/
+|-- manager.py              # Runtime facade and CLI entry
+|-- server.py               # FastAPI backend + WebSocket + task API
+|-- workers.json            # Agent/team configuration
+|-- runtime/                # Agent runtime modules
+|   |-- agent_task.py       # Task model, store, executor
+|   |-- pipeline.py         # DAG pipeline execution
+|   |-- tools.py            # Tool schemas and execution
+|   |-- workers.py          # Worker execution
+|   |-- verification.py     # Verification loop
+|   `-- ...
+|-- desktop/                # Electron desktop workbench
+|-- tests/                  # Automated tests
+|-- docs/                   # Integration notes
+|-- agent_api.md            # API integration guide
+`-- requirements.txt
+```
+
+### 和普通 Agent 脚本的区别
+
+- 把 Agent 暴露成服务，而不是一个聊天循环。
+- 有明确任务生命周期：`pending`, `running`, `completed`, `failed`, `cancelled`。
+- 支持后台执行长任务。
+- 日志和结果可以从 UI/API 检查。
+- 外部系统放在 tool adapter 后面，而不是写死在 prompt 里。
+- 默认 local-first，更适合私有代码仓库和内部项目上下文。
+
+### 安全边界
+
+已实现：
+
+- 任务类型白名单
+- Worker 白名单来自 `workers.json`
+- 任务描述不能为空
+- API 层不暴露任意 shell 执行入口
+- runtime 工具权限按 Worker 控制
+
+默认不包含：
+
+- 公网联网搜索
+- 生产级数据库后端
+- 企业认证 / SSO
+- 打包安装器
+- 飞书、Jira、GitLab、SQL 等公司系统适配器
+
+### 测试
+
+```bash
+python -m pytest -q
+```
+
+预期结果：
+
+```text
+217 passed
+```
+
+桌面端 JavaScript 语法检查：
+
+```bash
+cd desktop
+node --check main.js
+node --check preload.js
+node --check renderer.js
+node --check i18n.js
+```
+
+### License
+
+MIT
+
+---
+
+## English
+
+**A local-first multi-agent desktop workbench for turning AI agents into observable, async task workflows.**
+
+Local Agent Workbench is a FastAPI + Electron project that lets you run a multi-agent runtime from a desktop UI or a standard REST/WebSocket API. It is built for local repositories, private project context, task logs, result inspection, and controlled tool execution.
+
+[![Tests](https://img.shields.io/badge/tests-217%20passed-green)](.)
+[![Python](https://img.shields.io/badge/python-3.12-blue)](.)
+[![FastAPI](https://img.shields.io/badge/backend-FastAPI-009688)](.)
+[![Electron](https://img.shields.io/badge/desktop-Electron-47848F)](.)
+
+> Current scope: local project workbench. Public web search, enterprise SSO, packaged installers, and external business systems are designed as future tool/provider adapters.
+
+### Why This Exists
+
+Most demo agents stop at chat. This project treats agent work as a task lifecycle:
+
+```text
+create task -> validate input -> run in background -> stream status/logs -> inspect result -> persist history
+```
+
+That makes it easier to connect agents to real product surfaces: desktop apps, internal tools, web apps, mini programs, or company workflow systems.
+
+### Highlights
+
+| Area | What is implemented |
+|---|---|
+| **Desktop workbench** | Electron UI with workspace selection, real settings center, task list, live logs, result panel, and worker/task controls |
+| **Async task service** | `POST /agent/tasks` returns immediately; `TaskExecutor` runs work in a background thread pool |
+| **Observable runtime** | Task status, progress, logs, result previews, full details, cancellation, and WebSocket updates |
+| **Multi-agent runtime** | Manager + Deputy + 5 workers, verification loop, DAG pipeline, tool permissions, and JSON persistence |
+| **Settings and startup safety** | `/agent/settings` persists workspace/default task preferences; Electron verifies backend project identity before reuse |
+| **Engineering hygiene** | Modular `runtime/` package, no runtime-to-manager reverse dependency, 217 automated tests |
+
+### How It Works
+
+```mermaid
+flowchart LR
+    UI["Electron Desktop UI"] --> API["FastAPI Server"]
+    App["Web / App / Mini Program"] --> API
+    API --> Store["TaskStore JSON Persistence"]
+    API --> Executor["TaskExecutor Thread Pool"]
+    Executor --> Runtime["Multi-Agent Runtime"]
+    Runtime --> Tools["Local Tools / Workspace"]
+    Runtime --> Verify["Verification + Retry"]
+    Executor --> WS["WebSocket Updates"]
+    WS --> UI
+```
+
+The desktop app and external clients use the same task API. The runtime stays behind the server boundary, so tools, keys, permissions, and logs remain controlled by the backend.
+
+### Quick Start
+
+Install Python dependencies:
+
+```bash
+git clone https://github.com/yangzhengke12-lgtm/local-agent-workbench.git
+cd local-agent-workbench
+
+python -m venv .venv
+.venv\Scripts\activate
+
+pip install -r requirements.txt
+```
+
+Copy the environment template:
+
+```bash
+copy .env.example .env
+```
+
+Open `.env` and fill only the providers you actually use. The desktop app can start without keys, but real LLM tasks require at least one configured provider:
+
+```env
+ANTHROPIC_API_KEY=
+ANTHROPIC_BASE_URL=
+DASHSCOPE_API_KEY=
+MINIMAX_API_KEY=
+OPENAI_API_KEY=
+OPENAI_BASE_URL=
+```
+
+`.env` is ignored by git. The settings page only shows whether a provider is configured; it does not save or reveal API key values.
+
+Run the backend:
+
+```bash
+python server.py
+```
+
+Open:
+
+```text
+http://localhost:8000
+```
+
+Run the desktop workbench:
+
+```bash
+cd desktop
+npm install
+npm start
+```
+
+The Electron app starts the local FastAPI backend automatically when possible. It also checks the `/health` `project_dir`, so it will not silently attach to a backend from a different local checkout on port 8000.
+
+### Desktop Settings Center
+
+Click **Settings** in the lower-left corner or press `Ctrl+,` to open the desktop settings center. The following settings are real and persisted locally:
+
+- workspace path
+- theme
+- Chinese / English language
+- default task type
+- default worker
+- default left-sidebar state
+- task refresh interval
+
+Model/provider status, worker tools, dangerous tools, and memory file paths are shown as read-only runtime facts. The first version intentionally does not write API keys from the UI and does not expose fake toggles.
+
+### API Example
+
+Create an async task:
+
+```bash
+curl -X POST http://localhost:8000/agent/tasks ^
+  -H "Content-Type: application/json" ^
+  -d "{\"type\":\"worker_task\",\"worker_name\":\"Sophia\",\"description\":\"Review runtime/agent_task.py for API safety issues\"}"
+```
+
+Poll status/logs/result:
+
+```bash
+curl http://localhost:8000/agent/tasks/<task_id>
+curl http://localhost:8000/agent/tasks/<task_id>/logs
+curl http://localhost:8000/agent/tasks/<task_id>/result
+```
+
+For the complete integration guide, see [agent_api.md](agent_api.md).
+
+For business system integrations such as knowledge bases, Feishu, Jira, GitLab, databases, or internal APIs, see [docs/integration_guide.md](docs/integration_guide.md).
+
+### API Surface
+
+```text
+GET    /health
+GET    /agent/workspace
+POST   /agent/workspace
+GET    /agent/workers
+GET    /agent/settings
+PATCH  /agent/settings
+GET    /agent/runtime
+POST   /agent/tasks
+GET    /agent/tasks
+GET    /agent/tasks/{task_id}
+GET    /agent/tasks/{task_id}/detail
+GET    /agent/tasks/{task_id}/logs
+GET    /agent/tasks/{task_id}/result
+POST   /agent/tasks/{task_id}/cancel
+WS     /ws
+```
+
+Task types:
+
+```text
+worker_task
+verified_task
+project_pipeline_task
+```
+
+### Project Structure
+
+```text
+local-agent-workbench/
+|-- manager.py              # Runtime facade and CLI entry
+|-- server.py               # FastAPI backend + WebSocket + task API
+|-- workers.json            # Agent/team configuration
+|-- runtime/                # Agent runtime modules
+|   |-- agent_task.py       # Task model, store, executor
+|   |-- pipeline.py         # DAG pipeline execution
+|   |-- tools.py            # Tool schemas and execution
+|   |-- workers.py          # Worker execution
+|   |-- verification.py     # Verification loop
+|   `-- ...
+|-- desktop/                # Electron desktop workbench
+|-- tests/                  # Automated tests
+|-- docs/                   # Integration notes
+|-- agent_api.md            # API integration guide
+`-- requirements.txt
+```
+
+### Different From a Simple Agent Script
+
+- Exposes agents as a service, not just a chat loop.
+- Has a task lifecycle: `pending`, `running`, `completed`, `failed`, `cancelled`.
+- Supports long-running work through background execution.
+- Makes logs and results inspectable from UI and API.
+- Keeps external integrations behind tool adapters instead of hardcoding them into prompts.
+- Local-first by default, which fits private repositories and internal project context.
+
+### Safety Boundaries
+
+Implemented:
+
+- task type whitelist
+- worker whitelist from `workers.json`
+- non-empty task descriptions
+- API layer does not expose arbitrary shell execution as a public task endpoint
+- runtime tool permissions are controlled per worker
+
+Not included by default:
+
+- public web search
+- production database backend
+- enterprise auth / SSO
+- packaged installer
+- Feishu, Jira, GitLab, SQL, or other company-system adapters
+
+### Tests
+
+```bash
+python -m pytest -q
+```
+
+Expected:
+
+```text
+217 passed
+```
+
+Desktop JavaScript syntax check:
+
+```bash
+cd desktop
+node --check main.js
+node --check preload.js
+node --check renderer.js
+node --check i18n.js
+```
+
+### License
 
 MIT

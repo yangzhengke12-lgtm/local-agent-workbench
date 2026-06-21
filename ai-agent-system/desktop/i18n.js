@@ -17,8 +17,8 @@ var ZH = {
   // workspace
   'workspace.title': '工作区',
   'workspace.not_set': '未设置',
-  'workspace.placeholder': '输入项目路径...',
-  'workspace.set_btn': '设置',
+  'workspace.placeholder': '输入路径，或点击右侧选择...',
+  'workspace.set_btn': '选择',
   'workspace.set_failed': '设置工作区失败',
   // tasks
   'task.title': '任务列表',
@@ -31,6 +31,8 @@ var ZH = {
   // task types
   'task.type.worker': 'Worker 任务',
   'task.type.verified': '验证任务',
+  'task.type.pipeline': 'Pipeline',
+  'task.worker_disabled': 'Pipeline 任务不需要指定 Worker',
   // statuses
   'status.pending': '等待中',
   'status.running': '执行中',
@@ -43,6 +45,7 @@ var ZH = {
   'detail.status': '状态',
   'detail.worker': '执行者',
   'detail.updated': '更新',
+  'detail.workspace': '工作区',
   // log
   'log.title': '执行日志',
   'log.waiting': '等待执行...',
@@ -67,8 +70,8 @@ var EN = {
   'app.reconnecting': 'Reconnecting...',
   'workspace.title': 'Workspace',
   'workspace.not_set': 'Not set',
-  'workspace.placeholder': 'Enter project path...',
-  'workspace.set_btn': 'Set',
+  'workspace.placeholder': 'Enter path, or choose...',
+  'workspace.set_btn': 'Choose',
   'workspace.set_failed': 'Failed to set workspace',
   'task.title': 'Tasks',
   'task.empty': 'No tasks yet',
@@ -79,6 +82,8 @@ var EN = {
   'task.create_failed': 'Failed to create task',
   'task.type.worker': 'Worker Task',
   'task.type.verified': 'Verified Task',
+  'task.type.pipeline': 'Pipeline',
+  'task.worker_disabled': 'Pipeline tasks do not require a worker',
   'status.pending': 'Pending',
   'status.running': 'Running',
   'status.completed': 'Completed',
@@ -89,6 +94,7 @@ var EN = {
   'detail.status': 'Status',
   'detail.worker': 'Worker',
   'detail.updated': 'Updated',
+  'detail.workspace': 'Workspace',
   'log.title': 'Execution Log',
   'log.waiting': 'Waiting for execution...',
   'log.truncated': 'lines truncated',
@@ -121,6 +127,9 @@ function setLang(lang) {
   localStorage.setItem('workbench_lang', lang);
   loadDict();
   refreshAllUI();
+  if (typeof saveSetting === 'function' && !(window.state && window.state._applyingSettings)) {
+    saveSetting('language', lang);
+  }
 }
 
 // ── 刷新所有 UI ──
@@ -153,6 +162,12 @@ function refreshTypeSelect() {
   if (!sel) return;
   sel.options[0].textContent = t('task.type.worker');
   sel.options[1].textContent = t('task.type.verified');
+  if (sel.options[2]) {
+    sel.options[2].textContent = t('task.type.pipeline');
+  }
+  if (typeof updateWorkerAvailability === 'function') {
+    updateWorkerAvailability();
+  }
 }
 
 // 启动时加载

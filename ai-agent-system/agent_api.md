@@ -148,6 +148,7 @@ curl -s -X POST http://localhost:8000/agent/tasks \
 | description | string | ✅ | 任务描述，越具体越好 |
 | worker_name | string | 条件必填 | `worker_task` 和 `verified_task` 必须指定 |
 | project_name | string | 否 | 项目名称（project_pipeline_task 可选） |
+| workspace_path | string | 否 | 工作区目录路径，不传则继承服务器当前 workspace。必须是已存在的目录 |
 
 **Response (200):**
 ```json

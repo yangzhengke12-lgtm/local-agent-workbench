@@ -1,0 +1,34 @@
+[     487ms] [ERROR] Failed to load resource: the server responded with a status of 404 (File not found) @ http://127.0.0.1:8123/favicon.ico:0
+[   34615ms] [ERROR] WebSocket connection to 'ws://localhost:8000/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8123/renderer.js:70
+[   38451ms] [ERROR] WebSocket connection to 'ws://localhost:8000/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8123/renderer.js:70
+[   42800ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8000/agent/tasks?limit=100:0
+[   42800ms] [WARNING] API GET error: /agent/tasks?limit=100 | Failed to fetch @ http://127.0.0.1:8123/renderer.js:37
+[   43026ms] [ERROR] WebSocket connection to 'ws://localhost:8000/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8123/renderer.js:70
+[   48739ms] [ERROR] WebSocket connection to 'ws://localhost:8000/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8123/renderer.js:70
+[   52807ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8000/agent/tasks?limit=100:0
+[   52807ms] [WARNING] API GET error: /agent/tasks?limit=100 | Failed to fetch @ http://127.0.0.1:8123/renderer.js:37
+[   56122ms] [ERROR] WebSocket connection to 'ws://localhost:8000/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8123/renderer.js:70
+[   62808ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8000/agent/tasks?limit=100:0
+[   62808ms] [WARNING] API GET error: /agent/tasks?limit=100 | Failed to fetch @ http://127.0.0.1:8123/renderer.js:37
+[   66053ms] [ERROR] WebSocket connection to 'ws://localhost:8000/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8123/renderer.js:70
+[   72813ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8000/agent/tasks?limit=100:0
+[   72813ms] [WARNING] API GET error: /agent/tasks?limit=100 | Failed to fetch @ http://127.0.0.1:8123/renderer.js:37
+[   79771ms] [ERROR] WebSocket connection to 'ws://localhost:8000/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8123/renderer.js:70
+[   82795ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8000/agent/tasks?limit=100:0
+[   82795ms] [WARNING] API GET error: /agent/tasks?limit=100 | Failed to fetch @ http://127.0.0.1:8123/renderer.js:37
+[   92795ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8000/agent/tasks?limit=100:0
+[   92796ms] [WARNING] API GET error: /agent/tasks?limit=100 | Failed to fetch @ http://127.0.0.1:8123/renderer.js:37
+[   99190ms] [ERROR] WebSocket connection to 'ws://localhost:8000/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8123/renderer.js:70
+[  102823ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8000/agent/tasks?limit=100:0
+[  102824ms] [WARNING] API GET error: /agent/tasks?limit=100 | Failed to fetch @ http://127.0.0.1:8123/renderer.js:37
+[  112825ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8000/agent/tasks?limit=100:0
+[  112825ms] [WARNING] API GET error: /agent/tasks?limit=100 | Failed to fetch @ http://127.0.0.1:8123/renderer.js:37
+[  122810ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8000/agent/tasks?limit=100:0
+[  122810ms] [WARNING] API GET error: /agent/tasks?limit=100 | Failed to fetch @ http://127.0.0.1:8123/renderer.js:37
+[  127165ms] [ERROR] WebSocket connection to 'ws://localhost:8000/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8123/renderer.js:70
+[  132805ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8000/agent/tasks?limit=100:0
+[  132805ms] [WARNING] API GET error: /agent/tasks?limit=100 | Failed to fetch @ http://127.0.0.1:8123/renderer.js:37
+[  142825ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8000/agent/tasks?limit=100:0
+[  142825ms] [WARNING] API GET error: /agent/tasks?limit=100 | Failed to fetch @ http://127.0.0.1:8123/renderer.js:37
+[  152834ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8000/agent/tasks?limit=100:0
+[  152834ms] [WARNING] API GET error: /agent/tasks?limit=100 | Failed to fetch @ http://127.0.0.1:8123/renderer.js:37

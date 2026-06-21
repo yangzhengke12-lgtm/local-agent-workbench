@@ -9,74 +9,184 @@
 </head>
 <body>
   <div id="app">
-    <!-- Header -->
-    <div id="header">
-      <span class="header-title" data-i18n="app.title">Agent Desktop Workbench</span>
-      <div class="header-right">
-        <select id="lang-select" onchange="setLang(this.value)">
+    <div id="titlebar">
+      <div class="title-left">
+        <button class="icon-button rail-toggle" id="rail-toggle" aria-label="Toggle sidebar"></button>
+        <span class="brand-mark"></span>
+        <div class="brand-copy">
+          <span class="brand-name">Agent Workbench</span>
+          <span class="brand-model">/ local-runtime</span>
+        </div>
+      </div>
+      <div class="title-right">
+        <select id="theme-select" aria-label="Theme">
+          <option value="graphite">Graphite</option>
+          <option value="ember">Ember</option>
+          <option value="blue">Blue</option>
+          <option value="violet">Violet</option>
+          <option value="green">Green</option>
+        </select>
+        <select id="lang-select" onchange="setLang(this.value)" aria-label="Language">
           <option value="zh">中文</option>
           <option value="en">English</option>
         </select>
-        <span id="connection-status" data-i18n="app.connecting">连接中...</span>
+        <button class="icon-button more-button" id="more-button" aria-label="More"></button>
+        <div class="window-controls" aria-label="Window controls">
+          <button class="window-btn" id="window-minimize" title="Minimize" aria-label="Minimize"></button>
+          <button class="window-btn" id="window-maximize" title="Maximize" aria-label="Maximize"></button>
+          <button class="window-btn close" id="window-close" title="Close" aria-label="Close"></button>
+        </div>
       </div>
     </div>
 
-    <!-- Left Panel -->
-    <div id="left-panel">
+    <div id="workspace-bar">
+      <div class="workspace-tab active">
+        <span class="tab-dot"></span>
+        <span id="workspace-tab-name">my-agent</span>
+      </div>
+      <button class="tab-add" id="new-task-btn">+</button>
+      <span class="new-tab-label">新任务</span>
+    </div>
+
+    <aside id="left-panel">
+      <div class="sidebar-actions">
+        <button id="quick-new-task" class="new-session-btn">+ 新任务 <span>Ctrl N</span></button>
+        <button class="history-btn" id="history-refresh-btn" title="History"></button>
+      </div>
+
+      <div class="search-box">
+        <span class="search-icon"></span>
+        <input type="text" id="task-search" placeholder="搜索任务...">
+        <kbd>Ctrl K</kbd>
+      </div>
+
       <div id="workspace-section">
-        <div class="panel-title" data-i18n="workspace.title">工作区</div>
+        <div class="panel-title">
+          <span data-i18n="workspace.title">工作区</span>
+        </div>
         <div id="workspace-display" data-i18n="workspace.not_set">未设置</div>
         <div class="workspace-actions">
-          <input type="text" id="workspace-input" data-i18n="workspace.placeholder" placeholder="输入项目路径...">
-          <button id="workspace-set-btn" data-i18n="workspace.set_btn">设置</button>
+          <input type="text" id="workspace-input" data-i18n="workspace.placeholder" placeholder="输入路径，或点击右侧选择...">
+          <button id="workspace-set-btn" data-i18n="workspace.set_btn">选择</button>
         </div>
       </div>
+
       <div id="task-list-section">
-        <div class="panel-title" data-i18n="task.title">任务列表</div>
+        <div class="panel-title split-title">
+          <span data-i18n="task.title">任务列表</span>
+          <span id="task-count">0</span>
+        </div>
         <div id="task-list">
           <div class="task-list-empty" data-i18n="task.empty">暂无任务</div>
         </div>
       </div>
-    </div>
 
-    <!-- Center Panel -->
-    <div id="center-panel">
-      <div id="task-detail-section">
-        <div id="task-detail-header">
-          <div class="placeholder" data-i18n="task.select_hint">选择一个任务查看详情</div>
-        </div>
-        <div id="task-progress"></div>
+      <div class="sidebar-footer">
+        <button class="footer-link" data-action="policy">审批规则</button>
+        <button class="footer-link" data-action="about">关于</button>
+        <button class="footer-link" data-action="settings">设置 <kbd>Ctrl ,</kbd></button>
       </div>
-      <div id="log-section">
-        <div class="panel-title" data-i18n="log.title">执行日志</div>
+    </aside>
+
+    <main id="center-panel">
+      <div class="conversation-header">
+        <div class="conversation-title">
+          <div id="task-detail-section">
+            <div id="task-detail-header">
+              <div class="placeholder" data-i18n="task.select_hint">选择一个任务查看详情</div>
+            </div>
+            <div id="task-progress"></div>
+          </div>
+        </div>
+        <div class="conversation-actions">
+          <button id="copy-task-btn">复制</button>
+          <button id="export-task-btn">导出</button>
+          <button id="header-new-task">+ 新任务</button>
+        </div>
+      </div>
+
+      <section id="log-section">
+        <div class="panel-title split-title">
+          <span data-i18n="log.title">执行日志</span>
+          <span id="log-count">0</span>
+        </div>
         <div id="log-stream">
           <div class="placeholder" data-i18n="log.waiting">等待执行...</div>
         </div>
-      </div>
-    </div>
+      </section>
+    </main>
 
-    <!-- Right Panel -->
-    <div id="right-panel">
-      <div id="result-section">
-        <div class="panel-title" data-i18n="result.title">结果</div>
-        <div id="result-content" class="placeholder" data-i18n="result.empty">暂无结果</div>
+    <aside id="right-panel">
+      <div class="inspector-tabs">
+        <button class="active" data-inspector-tab="files">文件</button>
+        <button data-inspector-tab="tools">工具</button>
+        <button data-inspector-tab="memory">记忆</button>
+        <button data-inspector-tab="rules">规则</button>
       </div>
-      <div id="artifacts-section">
-        <div class="panel-title" data-i18n="artifacts.title">产出文件</div>
-        <div id="artifacts-content" class="placeholder" data-i18n="artifacts.empty">暂无产出</div>
+      <div class="context-meter">
+        <div class="meter-label">
+          <span id="context-token-label">上下文 · TOKENS</span>
+          <strong id="context-token-value">0 / 1M</strong>
+        </div>
+        <div class="meter-track"><span id="context-token-fill"></span></div>
+        <div class="meter-subline">
+          <span id="context-token-source">est. local context</span>
+          <span id="context-token-percent">0%</span>
+        </div>
       </div>
-    </div>
+      <div id="inspector-content">
+        <div class="placeholder">正在加载工作台上下文...</div>
+      </div>
+    </aside>
 
-    <!-- Bottom Bar -->
     <div id="bottom-bar">
-      <input type="text" id="task-description" data-i18n="task.desc_placeholder" placeholder="输入任务描述..." autofocus>
-      <select id="task-type">
-        <option value="worker_task" data-i18n="task.type.worker">Worker 任务</option>
-        <option value="verified_task" data-i18n="task.type.verified">验证任务</option>
-      </select>
-      <select id="task-worker"></select>
-      <button id="create-task-btn" class="btn-primary" data-i18n="task.create_btn">创建任务</button>
+      <div class="composer-shell">
+        <div class="composer-toolbar">
+          <span>/ 命令</span>
+          <span>@ 提及文件</span>
+          <span>Ctrl K 命令面板</span>
+          <span class="composer-mode">auto</span>
+        </div>
+        <div class="composer-row">
+          <input type="text" id="task-description" data-i18n="task.desc_placeholder" placeholder="向 Agent 提问 / 安排任务..." autofocus>
+          <select id="task-type">
+            <option value="worker_task" data-i18n="task.type.worker">Worker 任务</option>
+            <option value="verified_task" data-i18n="task.type.verified">验证任务</option>
+            <option value="project_pipeline_task" data-i18n="task.type.pipeline">Pipeline</option>
+          </select>
+          <select id="task-worker"></select>
+          <button id="create-task-btn" class="btn-primary" data-i18n="task.create_btn">发送</button>
+        </div>
+      </div>
     </div>
+
+    <div id="statusbar">
+      <span id="connection-status" data-i18n="app.connecting">连接中...</span>
+      <span id="status-token-count">tokens 0</span>
+      <span>任务 <strong id="status-task-count">0</strong></span>
+      <span id="status-theme">Graphite</span>
+    </div>
+    <section id="settings-view" aria-hidden="true">
+      <aside class="settings-sidebar">
+        <button id="settings-back" class="settings-back">← 返回工作台</button>
+        <div class="settings-search">
+          <span class="search-icon"></span>
+          <input id="settings-search-input" type="text" placeholder="搜索设置...">
+        </div>
+        <div id="settings-nav"></div>
+      </aside>
+      <main class="settings-main">
+        <div class="settings-head">
+          <div>
+            <h1>设置</h1>
+            <p id="settings-subtitle">本地 Agent 工作台配置</p>
+          </div>
+          <span id="settings-sync-state">未加载</span>
+        </div>
+        <div id="settings-content"></div>
+      </main>
+    </section>
+    <div id="toast" role="status" aria-live="polite"></div>
   </div>
 
   <script src="i18n.js"></script>

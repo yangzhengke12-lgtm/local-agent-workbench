@@ -4,6 +4,7 @@
 """
 import json
 import os
+import re
 import sys
 import threading
 import traceback
@@ -57,6 +58,24 @@ def _generate_task_id() -> str:
     return f"task_{ts}_{short}"
 
 
+def _extract_project_name_from_setup_result(text: str, fallback: str = "default_project") -> str:
+    """从 project_setup 的人类可读报告中提取项目名。"""
+    if not text:
+        return fallback
+    patterns = [
+        r"项目分工表:\s*([^\r\n]+)",
+        r"状态文件:\s*.*/([^/\r\n]+)_state\.json",
+        r"状态文件:\s*.*\\([^\\\r\n]+)_state\.json",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            name = match.group(1).strip()
+            if name:
+                return name
+    return fallback
+
+
 # ── 持久化 ──
 
 _TASKS_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "agent_tasks.json")
@@ -80,7 +99,15 @@ class TaskStore:
             try:
                 with open(_TASKS_FILE, "r", encoding="utf-8") as f:
                     data = json.load(f)
-            except (json.JSONDecodeError, OSError):
+            except json.JSONDecodeError as e:
+                import traceback
+                print(f"[TaskStore] 警告: agent_tasks.json 损坏，无法加载已有任务: {e}")
+                traceback.print_exc()
+                return {}
+            except OSError as e:
+                import traceback
+                print(f"[TaskStore] 警告: 无法读取 agent_tasks.json: {e}")
+                traceback.print_exc()
                 return {}
             _tasks_cache = {}
             for item in data:
@@ -333,8 +360,11 @@ class TaskExecutor:
 
         try:
             # 1. project_setup
-            ps_result = project_setup(task.description)
-            project_name = ps_result.get("project_name", task.project_name or "default_project")
+            ps_result = project_setup(self.workers, task.description)
+            project_name = _extract_project_name_from_setup_result(
+                ps_result,
+                task.project_name or "default_project",
+            )
             task.project_name = project_name
             self._append_log(task, f"project_setup 完成: {project_name}")
 

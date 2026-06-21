@@ -3,7 +3,7 @@ Multi-Agent 层级管理系统 v3
 老板（用户）→ 管理者（Manager Agent）→ 员工（Worker Agent）
 - 并行 Worker 执行
 - Worker 多轮对话记忆
-- 联网搜索能力
+- URL 抓取能力（fetch_url 工具，可获取已知网页/API 内容）
 - 多厂商模型自适应（DeepSeek / 千问 / MiniMax / GPT）
 
 员工角色和权限由 workers.json 配置
@@ -56,11 +56,12 @@ from runtime.config import (  # noqa: F401 — 向后兼容 re-export
     APP_VERSION,
     APP_RUNTIME_NAME,
     _init_providers,
+    get_default_client,
 )
 
-# 初始化默认 provider（DeepSeek 总是可用）
+# 初始化已配置 provider；缺 key 时桌面端仍可启动，真实 LLM 调用时再报明确错误。
 _init_providers()
-default_client = PROVIDERS["deepseek"]["client"]
+default_client = get_default_client()
 
 # ═══════════════════════════════════════════════════════════════
 # v4 Data Contracts — 已迁移到 runtime.contracts

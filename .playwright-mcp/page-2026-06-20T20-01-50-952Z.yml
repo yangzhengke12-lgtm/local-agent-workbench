@@ -1,0 +1,107 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - generic [ref=e4]:
+      - button "Toggle sidebar" [ref=e5] [cursor=pointer]
+      - generic [ref=e7]:
+        - generic [ref=e8]: Agent Workbench
+        - generic [ref=e9]: / local-runtime
+    - generic [ref=e10]:
+      - combobox "Theme" [ref=e11] [cursor=pointer]:
+        - option "Graphite" [selected]
+        - option "Ember"
+        - option "Blue"
+        - option "Violet"
+        - option "Green"
+      - combobox "Language" [ref=e12] [cursor=pointer]:
+        - option "中文" [selected]
+        - option "English"
+      - button "More" [ref=e13] [cursor=pointer]: ...
+      - generic "Window controls" [ref=e14]:
+        - button "Minimize" [ref=e15] [cursor=pointer]
+        - button "Maximize" [ref=e16] [cursor=pointer]
+        - button "Close" [ref=e17] [cursor=pointer]
+  - generic [ref=e18]:
+    - generic [ref=e21]: my-agent
+    - button "+" [ref=e22] [cursor=pointer]
+    - generic [ref=e23]: 新任务
+  - complementary:
+    - generic:
+      - button "+ 新任务 Ctrl N"
+      - button "History"
+    - generic:
+      - textbox "搜索任务..."
+      - generic: Ctrl K
+    - generic:
+      - generic:
+        - generic: 工作区
+      - generic: 未设置
+      - generic:
+        - textbox "输入路径，或点击右侧选择..."
+        - button "选择"
+    - generic:
+      - generic:
+        - generic: 任务列表
+        - generic: "0"
+      - generic:
+        - generic: 暂无任务
+    - generic:
+      - button "审批规则"
+      - button "关于"
+      - button "设置 Ctrl ,":
+        - text: 设置
+        - generic: Ctrl ,
+  - main [ref=e24]:
+    - generic [ref=e25]:
+      - generic [ref=e29]: 选择一个任务查看详情
+      - generic [ref=e30]:
+        - button "复制" [ref=e31] [cursor=pointer]
+        - button "导出" [ref=e32] [cursor=pointer]
+        - button "+ 新任务" [ref=e33] [cursor=pointer]
+    - generic [ref=e34]:
+      - generic [ref=e35]:
+        - generic [ref=e36]: 执行日志
+        - generic [ref=e37]: "0"
+      - generic [ref=e39]: 等待执行...
+  - complementary [ref=e40]:
+    - generic [ref=e41]:
+      - button "文件" [ref=e42] [cursor=pointer]
+      - button "工具" [ref=e43] [cursor=pointer]
+      - button "记忆" [ref=e44] [cursor=pointer]
+      - button "规则" [ref=e45] [cursor=pointer]
+    - generic [ref=e46]:
+      - generic [ref=e47]:
+        - generic [ref=e48]: 上下文 · TOKENS
+        - strong [ref=e49]: 0 / 1M
+      - generic [ref=e52]:
+        - generic [ref=e53]: est. workspace context · window 1M
+        - generic [ref=e54]: 0%
+    - generic [ref=e56]:
+      - generic [ref=e57]: 工作区文件
+      - generic [ref=e58]: 先选择工作区，文件树会显示在这里。
+      - generic [ref=e59]: 文件预览
+      - generic [ref=e60]: 点击上方文件，或点击任务产物文件进行预览。
+      - generic [ref=e61]: 当前任务产物
+      - generic [ref=e62]: 选择任务后会显示结果摘要。
+      - generic [ref=e63]: 暂无产出
+  - generic [ref=e65]:
+    - generic [ref=e66]:
+      - generic [ref=e67]: / 命令
+      - generic [ref=e68]: "@ 提及文件"
+      - generic [ref=e69]: Ctrl K 命令面板
+      - generic [ref=e70]: auto
+    - generic [ref=e71]:
+      - textbox "输入任务描述..." [active] [ref=e72]
+      - combobox [ref=e73] [cursor=pointer]:
+        - option "Worker 任务" [selected]
+        - option "验证任务"
+        - option "Pipeline"
+      - combobox [ref=e74] [cursor=pointer]
+      - button "创建任务" [ref=e75] [cursor=pointer]
+  - generic:
+    - generic: 重连中...
+    - generic: tokens 0
+    - generic:
+      - text: 任务
+      - strong: "0"
+    - generic: Graphite
+  - status

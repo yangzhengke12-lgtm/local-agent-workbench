@@ -1,0 +1,53 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - generic [ref=e4]:
+      - generic [ref=e5]: A
+      - generic [ref=e6]:
+        - generic [ref=e7]: Agent Desktop 工作台
+        - generic [ref=e8]: Local-first runtime
+    - generic [ref=e9]:
+      - generic [ref=e10]: Workspace Agent
+      - generic [ref=e12]: 重连中...
+    - generic [ref=e13]:
+      - combobox "Language" [ref=e14] [cursor=pointer]:
+        - option "中文" [selected]
+        - option "English"
+      - generic "Window controls" [ref=e15]:
+        - button "Minimize" [ref=e16] [cursor=pointer]
+        - button "Maximize" [ref=e17] [cursor=pointer]
+        - button "Close" [ref=e18] [cursor=pointer]
+  - generic [ref=e19]:
+    - generic [ref=e20]:
+      - generic [ref=e22]: 工作区
+      - generic [ref=e23]: 未设置
+      - generic [ref=e24]:
+        - textbox "输入路径，或点击右侧选择..." [ref=e25]
+        - button "选择" [ref=e26] [cursor=pointer]
+    - generic [ref=e27]:
+      - generic [ref=e28]:
+        - generic [ref=e29]: 任务列表
+        - generic [ref=e30]: "0"
+      - generic [ref=e32]: 暂无任务
+  - generic [ref=e33]:
+    - generic [ref=e36]: 选择一个任务查看详情
+    - generic [ref=e38]:
+      - generic [ref=e39]:
+        - generic [ref=e40]: 执行日志
+        - generic [ref=e41]: "0"
+      - generic [ref=e43]: 等待执行...
+  - generic [ref=e44]:
+    - generic [ref=e45]:
+      - generic [ref=e46]: 结果
+      - generic [ref=e47]: 暂无结果
+    - generic [ref=e48]:
+      - generic [ref=e49]: 产出文件
+      - generic [ref=e50]: 暂无产出
+  - generic [ref=e51]:
+    - textbox "输入任务描述..." [active] [ref=e53]
+    - generic [ref=e54]:
+      - combobox [ref=e55] [cursor=pointer]:
+        - option "Worker 任务" [selected]
+        - option "验证任务"
+        - option "Pipeline"
+      - combobox [ref=e56] [cursor=pointer]
+      - button "创建任务" [ref=e57] [cursor=pointer]

@@ -19,6 +19,6 @@ if not exist "%PYTHON%" (
     exit /b 1
 )
 
-cd /d "%ROOT%AI-Agent管理系统"
-"%PYTHON%" manager.py
+cd /d "%ROOT%ai-agent-system"
+"%PYTHON%" server.py
 pause
