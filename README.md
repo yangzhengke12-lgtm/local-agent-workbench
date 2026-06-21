@@ -10,7 +10,7 @@
 
 Local Agent Workbench 基于 FastAPI + Electron 构建，既可以通过桌面端操作，也可以通过标准 REST/WebSocket API 接入。它面向本地代码仓库、私有项目上下文、任务日志、结果检查和受控工具调用。
 
-[![Tests](https://img.shields.io/badge/tests-207%20passed-green)](.)
+[![Tests](https://img.shields.io/badge/tests-217%20passed-green)](.)
 [![Python](https://img.shields.io/badge/python-3.12-blue)](.)
 [![FastAPI](https://img.shields.io/badge/backend-FastAPI-009688)](.)
 [![Electron](https://img.shields.io/badge/desktop-Electron-47848F)](.)
@@ -31,11 +31,12 @@ create task -> validate input -> run in background -> stream status/logs -> insp
 
 | 模块 | 已实现能力 |
 |---|---|
-| **桌面工作台** | Electron UI，支持工作区选择、任务列表、实时日志、结果面板、Worker/任务类型控制 |
+| **桌面工作台** | Electron UI，支持工作区选择、真实设置中心、任务列表、实时日志、结果面板、Worker/任务类型控制 |
 | **异步任务服务** | `POST /agent/tasks` 立即返回 `task_id`，后台线程池执行任务 |
 | **可观测运行时** | 任务状态、进度、日志、结果预览、完整详情、取消任务、WebSocket 推送 |
 | **多 Agent Runtime** | Manager + Deputy + 5 Workers，验证闭环、DAG Pipeline、工具权限、JSON 持久化 |
-| **工程化质量** | `runtime/` 模块化拆分，无 runtime 到 manager 的反向依赖，207 个自动化测试 |
+| **设置与启动稳定性** | `/agent/settings` 持久化工作区和默认任务偏好；Electron 校验后端项目目录，避免误连旧服务 |
+| **工程化质量** | `runtime/` 模块化拆分，无 runtime 到 manager 的反向依赖，217 个自动化测试 |
 
 ### 架构
 
@@ -68,18 +69,24 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-在项目根目录创建 `.env`：
+复制环境变量模板：
+
+```bash
+copy .env.example .env
+```
+
+打开 `.env`，只填写你实际使用的模型 provider。桌面端可以在没有 key 时启动，但真实 LLM 任务需要至少一个可用 provider：
 
 ```env
-ANTHROPIC_API_KEY=your-anthropic-api-key
+ANTHROPIC_API_KEY=
 ANTHROPIC_BASE_URL=
-ANTHROPIC_MODEL=deepseek-v4-pro
-
+DASHSCOPE_API_KEY=
+MINIMAX_API_KEY=
 OPENAI_API_KEY=
 OPENAI_BASE_URL=
 ```
 
-只填写你实际使用的模型 provider。`.env` 已被 git 忽略，不会提交到仓库。
+`.env` 已被 git 忽略，不会提交到仓库。设置页只展示 provider 是否已配置，不会保存或显示 API key 原文。
 
 启动后端：
 
@@ -102,6 +109,22 @@ npm start
 ```
 
 Electron 会尽量自动启动本地 FastAPI 后端；如果 8000 端口已有后端运行，会复用现有服务。
+
+桌面端启动时会校验 `/health` 返回的 `project_dir`。如果 8000 端口被另一个项目的旧后端占用，应用会给出明确错误，而不是误连到旧服务。
+
+### 桌面设置中心
+
+左下角点击「设置」或使用 `Ctrl+,` 可以打开桌面设置中心。当前真实可保存的设置包括：
+
+- 工作区目录
+- 主题颜色
+- 中文 / English
+- 默认任务类型
+- 默认 Worker
+- 左侧栏默认展开状态
+- 任务列表刷新间隔
+
+模型、Provider、Worker 工具权限、危险工具、记忆文件路径等会以只读方式展示真实运行时状态。首版不在设置页写入 API key，也不提供看起来能改但实际不生效的假开关。
 
 ### API 示例
 
@@ -132,6 +155,9 @@ GET    /health
 GET    /agent/workspace
 POST   /agent/workspace
 GET    /agent/workers
+GET    /agent/settings
+PATCH  /agent/settings
+GET    /agent/runtime
 POST   /agent/tasks
 GET    /agent/tasks
 GET    /agent/tasks/{task_id}
@@ -207,7 +233,7 @@ python -m pytest -q
 预期结果：
 
 ```text
-207 passed
+217 passed
 ```
 
 桌面端 JavaScript 语法检查：
@@ -232,7 +258,7 @@ MIT
 
 Local Agent Workbench is a FastAPI + Electron project that lets you run a multi-agent runtime from a desktop UI or a standard REST/WebSocket API. It is built for local repositories, private project context, task logs, result inspection, and controlled tool execution.
 
-[![Tests](https://img.shields.io/badge/tests-207%20passed-green)](.)
+[![Tests](https://img.shields.io/badge/tests-217%20passed-green)](.)
 [![Python](https://img.shields.io/badge/python-3.12-blue)](.)
 [![FastAPI](https://img.shields.io/badge/backend-FastAPI-009688)](.)
 [![Electron](https://img.shields.io/badge/desktop-Electron-47848F)](.)
@@ -253,11 +279,12 @@ That makes it easier to connect agents to real product surfaces: desktop apps, i
 
 | Area | What is implemented |
 |---|---|
-| **Desktop workbench** | Electron UI with workspace selection, task list, live logs, result panel, and worker/task controls |
+| **Desktop workbench** | Electron UI with workspace selection, real settings center, task list, live logs, result panel, and worker/task controls |
 | **Async task service** | `POST /agent/tasks` returns immediately; `TaskExecutor` runs work in a background thread pool |
 | **Observable runtime** | Task status, progress, logs, result previews, full details, cancellation, and WebSocket updates |
 | **Multi-agent runtime** | Manager + Deputy + 5 workers, verification loop, DAG pipeline, tool permissions, and JSON persistence |
-| **Engineering hygiene** | Modular `runtime/` package, no runtime-to-manager reverse dependency, 207 automated tests |
+| **Settings and startup safety** | `/agent/settings` persists workspace/default task preferences; Electron verifies backend project identity before reuse |
+| **Engineering hygiene** | Modular `runtime/` package, no runtime-to-manager reverse dependency, 217 automated tests |
 
 ### How It Works
 
@@ -290,18 +317,24 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-Create `.env` in the project root:
+Copy the environment template:
+
+```bash
+copy .env.example .env
+```
+
+Open `.env` and fill only the providers you actually use. The desktop app can start without keys, but real LLM tasks require at least one configured provider:
 
 ```env
-ANTHROPIC_API_KEY=your-anthropic-api-key
+ANTHROPIC_API_KEY=
 ANTHROPIC_BASE_URL=
-ANTHROPIC_MODEL=deepseek-v4-pro
-
+DASHSCOPE_API_KEY=
+MINIMAX_API_KEY=
 OPENAI_API_KEY=
 OPENAI_BASE_URL=
 ```
 
-Only fill the provider you use. `.env` is ignored by git.
+`.env` is ignored by git. The settings page only shows whether a provider is configured; it does not save or reveal API key values.
 
 Run the backend:
 
@@ -323,7 +356,21 @@ npm install
 npm start
 ```
 
-The Electron app starts the local FastAPI backend automatically when possible.
+The Electron app starts the local FastAPI backend automatically when possible. It also checks the `/health` `project_dir`, so it will not silently attach to a backend from a different local checkout on port 8000.
+
+### Desktop Settings Center
+
+Click **Settings** in the lower-left corner or press `Ctrl+,` to open the desktop settings center. The following settings are real and persisted locally:
+
+- workspace path
+- theme
+- Chinese / English language
+- default task type
+- default worker
+- default left-sidebar state
+- task refresh interval
+
+Model/provider status, worker tools, dangerous tools, and memory file paths are shown as read-only runtime facts. The first version intentionally does not write API keys from the UI and does not expose fake toggles.
 
 ### API Example
 
@@ -354,6 +401,9 @@ GET    /health
 GET    /agent/workspace
 POST   /agent/workspace
 GET    /agent/workers
+GET    /agent/settings
+PATCH  /agent/settings
+GET    /agent/runtime
 POST   /agent/tasks
 GET    /agent/tasks
 GET    /agent/tasks/{task_id}
@@ -429,7 +479,7 @@ python -m pytest -q
 Expected:
 
 ```text
-207 passed
+217 passed
 ```
 
 Desktop JavaScript syntax check:

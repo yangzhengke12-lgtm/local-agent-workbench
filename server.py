@@ -15,6 +15,7 @@ import uvicorn
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from manager import load_workers, run_worker, default_client, DEFAULT_MODEL
+from runtime.config import APP_RUNTIME_NAME, APP_VERSION, MODEL_TIERS, get_provider_status
 
 from runtime.agent_task import (
     AgentTask,
@@ -61,6 +62,22 @@ task_executor = init_executor(workers, max_workers=4)
 
 # ── 桌面工作台 workspace 状态 ──
 _current_workspace = {"path": None, "set_at": None}
+RUNTIME_SETTINGS_FILE = "runtime_settings.json"
+DEFAULT_RUNTIME_SETTINGS = {
+    "workspace_path": None,
+    "default_task_type": "worker_task",
+    "default_worker": "",
+    "theme": "graphite",
+    "language": "zh",
+    "rail_collapsed": False,
+    "refresh_interval_sec": 10,
+    "inspector_tab": "files",
+    "log_max_lines": 1000,
+}
+EDITABLE_SETTING_FIELDS = set(DEFAULT_RUNTIME_SETTINGS.keys())
+THEME_CHOICES = {"graphite", "ember", "blue", "violet", "green"}
+LANGUAGE_CHOICES = {"zh", "en"}
+INSPECTOR_TAB_CHOICES = {"files", "tools", "memory", "rules"}
 _WORKSPACE_EXCLUDED_DIRS = {".git", "__pycache__", "node_modules", ".venv", "venv", ".pytest_cache", ".codegraph"}
 _TEXT_FILE_EXTENSIONS = {
     ".bat", ".c", ".cfg", ".conf", ".cpp", ".cs", ".css", ".csv", ".env", ".go",
@@ -113,6 +130,71 @@ def _safe_load_json_file(path: str, default):
             return json.load(f)
     except Exception:
         return default
+
+
+def _settings_path() -> str:
+    return _repo_path(RUNTIME_SETTINGS_FILE)
+
+
+def _load_runtime_settings() -> dict:
+    data = _safe_load_json_file(_settings_path(), {})
+    settings = dict(DEFAULT_RUNTIME_SETTINGS)
+    if isinstance(data, dict):
+        for key in EDITABLE_SETTING_FIELDS:
+            if key in data:
+                settings[key] = data[key]
+    return _normalize_runtime_settings(settings)
+
+
+def _save_runtime_settings(settings: dict) -> dict:
+    normalized = _normalize_runtime_settings(settings)
+    with open(_settings_path(), "w", encoding="utf-8") as f:
+        json.dump(normalized, f, ensure_ascii=False, indent=2)
+    return normalized
+
+
+def _normalize_runtime_settings(settings: dict) -> dict:
+    normalized = dict(DEFAULT_RUNTIME_SETTINGS)
+    normalized.update({k: settings.get(k) for k in EDITABLE_SETTING_FIELDS if k in settings})
+
+    workspace_path = normalized.get("workspace_path")
+    normalized["workspace_path"] = os.path.abspath(os.path.expanduser(workspace_path)) if workspace_path else None
+
+    if normalized.get("default_task_type") not in VALID_TASK_TYPES:
+        normalized["default_task_type"] = DEFAULT_RUNTIME_SETTINGS["default_task_type"]
+    if normalized.get("theme") not in THEME_CHOICES:
+        normalized["theme"] = DEFAULT_RUNTIME_SETTINGS["theme"]
+    if normalized.get("language") not in LANGUAGE_CHOICES:
+        normalized["language"] = DEFAULT_RUNTIME_SETTINGS["language"]
+    if normalized.get("inspector_tab") not in INSPECTOR_TAB_CHOICES:
+        normalized["inspector_tab"] = DEFAULT_RUNTIME_SETTINGS["inspector_tab"]
+
+    normalized["rail_collapsed"] = bool(normalized.get("rail_collapsed"))
+
+    try:
+        normalized["refresh_interval_sec"] = max(3, min(60, int(normalized.get("refresh_interval_sec", 10))))
+    except (TypeError, ValueError):
+        normalized["refresh_interval_sec"] = DEFAULT_RUNTIME_SETTINGS["refresh_interval_sec"]
+    try:
+        normalized["log_max_lines"] = max(100, min(10000, int(normalized.get("log_max_lines", 1000))))
+    except (TypeError, ValueError):
+        normalized["log_max_lines"] = DEFAULT_RUNTIME_SETTINGS["log_max_lines"]
+
+    default_worker = normalized.get("default_worker") or ""
+    if default_worker and default_worker not in workers:
+        normalized["default_worker"] = ""
+    return normalized
+
+
+def _apply_runtime_settings(settings: dict) -> None:
+    workspace_path = settings.get("workspace_path")
+    if workspace_path and os.path.isdir(workspace_path):
+        _current_workspace["path"] = workspace_path
+        _current_workspace["set_at"] = _current_workspace.get("set_at") or "restored"
+
+
+runtime_settings = _load_runtime_settings()
+_apply_runtime_settings(runtime_settings)
 
 
 def _is_probably_text(path: str, sample: bytes) -> bool:
@@ -329,11 +411,14 @@ async def root():
     return {
         "name": "local-agent-workbench",
         "status": "ok",
+        "version": APP_VERSION,
+        "project_dir": _repo_path(),
         "docs": {
             "health": "/health",
             "workers": "/agent/workers",
             "tasks": "/agent/tasks",
             "workspace": "/agent/workspace",
+            "settings": "/agent/settings",
             "websocket": "/ws",
         },
     }
@@ -345,11 +430,121 @@ async def root():
 
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "app": "local-agent-workbench",
+        "runtime": APP_RUNTIME_NAME,
+        "version": APP_VERSION,
+        "project_dir": _repo_path(),
+    }
 
 
 class WorkspaceRequest(BaseModel):
     path: str
+
+
+def _dangerous_tools() -> list[str]:
+    return ["write_file", "run_command", "github_create_pr", "save_template"]
+
+
+def _runtime_status() -> dict:
+    dangerous_tools = _dangerous_tools()
+    return {
+        "app": {
+            "name": "local-agent-workbench",
+            "runtime": APP_RUNTIME_NAME,
+            "version": APP_VERSION,
+            "project_dir": _repo_path(),
+            "settings_file": _settings_path(),
+        },
+        "model": {
+            "default_model": DEFAULT_MODEL,
+            "context_window": "1M",
+            "context_window_tokens": 1000000,
+            "model_tiers": {
+                key: {"provider": value[0], "model": value[1]}
+                for key, value in MODEL_TIERS.items()
+            },
+        },
+        "providers": get_provider_status(),
+        "workers": [
+            {
+                "name": k,
+                "role": v.get("role", ""),
+                "description": v.get("description", ""),
+                "tools": v.get("tool_names", []),
+                "dangerous_tools": [tool for tool in v.get("tool_names", []) if tool in dangerous_tools],
+                "model": v.get("model", ""),
+            }
+            for k, v in workers.items()
+        ],
+        "permissions": {
+            "dangerous_tools": dangerous_tools,
+            "workspace_policy": {
+                "current_workspace": _current_workspace.get("path"),
+                "set_at": _current_workspace.get("set_at"),
+                "file_preview": "只允许读取当前 workspace 内文件；排除依赖、缓存和 .git 目录。",
+                "command_execution": "桌面接口不执行任意命令；命令只能由具备 run_command 工具的 Worker 在任务中调用。",
+            },
+        },
+        "memory": {
+            "session_file": _repo_path(SESSION_FILE),
+            "knowledge_file": _repo_path(KNOWLEDGE_FILE),
+            "task_board_file": _repo_path(TASK_BOARD_FILE),
+            "score_file": _repo_path(SCORE_FILE),
+            "project_state_dir": _repo_path(PROJECT_STATE_DIR),
+        },
+    }
+
+
+def _settings_schema() -> dict:
+    return {
+        "editable_fields": sorted(EDITABLE_SETTING_FIELDS),
+        "choices": {
+            "theme": sorted(THEME_CHOICES),
+            "language": sorted(LANGUAGE_CHOICES),
+            "default_task_type": sorted(VALID_TASK_TYPES),
+            "default_worker": sorted(workers.keys()),
+            "inspector_tab": sorted(INSPECTOR_TAB_CHOICES),
+        },
+        "bounds": {
+            "refresh_interval_sec": {"min": 3, "max": 60},
+            "log_max_lines": {"min": 100, "max": 10000},
+        },
+        "read_only": [
+            "providers",
+            "model.default_model",
+            "model.context_window",
+            "workers.tools",
+            "permissions.dangerous_tools",
+            "memory.*",
+        ],
+    }
+
+
+def _settings_response() -> dict:
+    return {
+        "settings": runtime_settings,
+        "schema": _settings_schema(),
+        "runtime": _runtime_status(),
+    }
+
+
+def _validate_settings_patch(payload: dict) -> dict:
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail="settings patch 必须是 JSON object")
+    unknown = sorted(set(payload.keys()) - EDITABLE_SETTING_FIELDS)
+    if unknown:
+        raise HTTPException(status_code=422, detail=f"不允许修改字段: {', '.join(unknown)}")
+
+    merged = dict(runtime_settings)
+    merged.update(payload)
+    normalized = _normalize_runtime_settings(merged)
+
+    workspace_path = normalized.get("workspace_path")
+    if workspace_path and not os.path.isdir(workspace_path):
+        raise HTTPException(status_code=400, detail=f"目录不存在: {workspace_path}")
+    return normalized
 
 
 @app.post("/agent/workspace")
@@ -359,6 +554,8 @@ async def set_workspace(req: WorkspaceRequest):
         raise HTTPException(status_code=400, detail=f"目录不存在: {p}")
     _current_workspace["path"] = p
     _current_workspace["set_at"] = _now_ws()
+    runtime_settings["workspace_path"] = p
+    _save_runtime_settings(runtime_settings)
     return {"ok": True, "workspace": p, "set_at": _current_workspace["set_at"]}
 
 
@@ -368,6 +565,27 @@ async def get_workspace():
         "workspace": _current_workspace["path"],
         "set_at": _current_workspace["set_at"],
     }
+
+
+@app.get("/agent/settings")
+async def get_agent_settings():
+    return JSONResponse(_settings_response())
+
+
+@app.patch("/agent/settings")
+async def patch_agent_settings(patch: dict):
+    global runtime_settings
+    runtime_settings = _save_runtime_settings(_validate_settings_patch(patch))
+    _apply_runtime_settings(runtime_settings)
+    return JSONResponse({
+        "ok": True,
+        **_settings_response(),
+    })
+
+
+@app.get("/agent/runtime")
+async def get_agent_runtime():
+    return JSONResponse(_runtime_status())
 
 
 @app.get("/agent/workers")
@@ -532,7 +750,7 @@ async def get_agent_memory():
 @app.get("/agent/rules")
 async def get_agent_rules():
     """返回桌面端可展示的任务规则和工具权限。"""
-    dangerous_tools = ["write_file", "run_command", "github_create_pr", "save_template"]
+    runtime = _runtime_status()
     return JSONResponse({
         "task_types": [
             {
@@ -554,24 +772,9 @@ async def get_agent_rules():
                 "description": "由 project_setup 拆分 DAG 并运行流水线，适合多步骤项目任务。",
             },
         ],
-        "workspace_policy": {
-            "current_workspace": _current_workspace.get("path"),
-            "set_at": _current_workspace.get("set_at"),
-            "file_preview": "只允许读取当前 workspace 内文件；排除依赖、缓存和 .git 目录。",
-            "command_execution": "桌面接口不执行任意命令；命令只能由具备 run_command 工具的 Worker 在任务中调用。",
-        },
-        "dangerous_tools": dangerous_tools,
-        "workers": [
-            {
-                "name": k,
-                "role": v.get("role", ""),
-                "description": v.get("description", ""),
-                "tools": v.get("tool_names", []),
-                "dangerous_tools": [tool for tool in v.get("tool_names", []) if tool in dangerous_tools],
-                "model": v.get("model", ""),
-            }
-            for k, v in workers.items()
-        ],
+        "workspace_policy": runtime["permissions"]["workspace_policy"],
+        "dangerous_tools": runtime["permissions"]["dangerous_tools"],
+        "workers": runtime["workers"],
     })
 
 

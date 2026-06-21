@@ -22,6 +22,8 @@ from runtime.agent_task import (
     _extract_project_name_from_setup_result,
     VALID_TASK_TYPES,
 )
+from runtime.config import MissingProviderClient, get_default_client
+import server
 
 client = TestClient(app)
 
@@ -193,6 +195,27 @@ class TestTaskAPI(unittest.TestCase):
         cls._verified_patcher.stop()
         cls._proj_setup_patcher.stop()
         cls._pipeline_patcher.stop()
+
+    def setUp(self):
+        self._settings_file = server._settings_path()
+        self._settings_file_existed = os.path.exists(self._settings_file)
+        self._settings_file_content = None
+        if self._settings_file_existed:
+            with open(self._settings_file, "r", encoding="utf-8") as f:
+                self._settings_file_content = f.read()
+        self._runtime_settings = dict(server.runtime_settings)
+        self._current_workspace = dict(server._current_workspace)
+
+    def tearDown(self):
+        server.runtime_settings.clear()
+        server.runtime_settings.update(self._runtime_settings)
+        server._current_workspace.clear()
+        server._current_workspace.update(self._current_workspace)
+        if self._settings_file_existed:
+            with open(self._settings_file, "w", encoding="utf-8") as f:
+                f.write(self._settings_file_content or "")
+        elif os.path.exists(self._settings_file):
+            os.remove(self._settings_file)
 
     def test_create_worker_task_returns_task_id(self):
         resp = client.post("/agent/tasks", json={
@@ -460,6 +483,62 @@ class TestTaskAPI(unittest.TestCase):
         self.assertIn("task_types", rules_data)
         self.assertIn("workers", rules_data)
         self.assertIn("dangerous_tools", rules_data)
+
+    def test_health_identifies_project_runtime(self):
+        resp = client.get("/health")
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()
+        self.assertEqual(data["app"], "local-agent-workbench")
+        self.assertIn("project_dir", data)
+        self.assertTrue(os.path.isdir(data["project_dir"]))
+
+    def test_settings_endpoint_returns_runtime_status_without_keys(self):
+        resp = client.get("/agent/settings")
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()
+        self.assertIn("settings", data)
+        self.assertIn("schema", data)
+        self.assertIn("runtime", data)
+        self.assertIn("providers", data["runtime"])
+        self.assertNotIn("test-dummy-key", resp.text)
+        self.assertNotIn("sk-", resp.text)
+
+    def test_settings_patch_rejects_unknown_fields(self):
+        resp = client.patch("/agent/settings", json={"api_key": "should-not-save"})
+        self.assertEqual(resp.status_code, 422, resp.text)
+
+    def test_settings_patch_persists_workspace(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            resp = client.patch("/agent/settings", json={
+                "workspace_path": tmp,
+                "default_task_type": "verified_task",
+                "theme": "blue",
+                "refresh_interval_sec": 7,
+            })
+            self.assertEqual(resp.status_code, 200, resp.text)
+            data = resp.json()
+            self.assertEqual(data["settings"]["workspace_path"], os.path.abspath(tmp))
+            self.assertEqual(data["settings"]["default_task_type"], "verified_task")
+            self.assertEqual(server._current_workspace["path"], os.path.abspath(tmp))
+
+            workspace = client.get("/agent/workspace")
+            self.assertEqual(workspace.json()["workspace"], os.path.abspath(tmp))
+
+    def test_missing_default_client_fails_only_on_call(self):
+        import runtime.config as cfg
+        old_key = cfg.DEEPSEEK_API_KEY
+        old_providers = dict(cfg.PROVIDERS)
+        try:
+            cfg.DEEPSEEK_API_KEY = ""
+            cfg.PROVIDERS.clear()
+            client_obj = get_default_client()
+            self.assertIsInstance(client_obj, MissingProviderClient)
+            with self.assertRaises(RuntimeError):
+                client_obj.messages.create(model="x", messages=[])
+        finally:
+            cfg.DEEPSEEK_API_KEY = old_key
+            cfg.PROVIDERS.clear()
+            cfg.PROVIDERS.update(old_providers)
 
 
 class TestTaskPersistence(unittest.TestCase):

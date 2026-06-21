@@ -1,7 +1,7 @@
 """Runtime 配置：环境变量、provider 注册、模型路由常量。
 
 特性：
-- import 不要求 DashScope/MiniMax/OpenAI key 存在（只要求 ANTHROPIC_API_KEY）
+- import 不要求任何 API key 存在；缺 key 时只在真实 LLM 调用处报明确错误
 - provider client 懒加载——只在首次使用时创建
 - 厂商路由只依赖配置表，不做实际连接
 """
@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ── 环境变量 ────────────────────────────────────────────
-DEEPSEEK_API_KEY = os.environ["ANTHROPIC_API_KEY"]
+DEEPSEEK_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 DEEPSEEK_BASE_URL = os.environ.get("ANTHROPIC_BASE_URL")
 
 DASHSCOPE_API_KEY = os.environ.get("DASHSCOPE_API_KEY", "")
@@ -51,11 +51,28 @@ APP_RUNTIME_NAME = "Agentic Workflow Runtime"
 PROVIDERS: dict[str, dict] = {}
 
 
+class MissingProviderClient:
+    """占位 client：让桌面端可启动，并在真实调用时给出清晰错误。"""
+
+    def __init__(self, provider_name: str, env_var: str):
+        self.provider_name = provider_name
+        self.env_var = env_var
+        self.messages = self
+        self.chat = self
+        self.completions = self
+
+    def create(self, *args, **kwargs):
+        raise RuntimeError(
+            f"{self.provider_name} provider 未配置：缺少环境变量 {self.env_var}。"
+            "请在 .env 或系统环境变量中配置后重新启动桌面端。"
+        )
+
+
 def _init_providers() -> dict:
     """懒初始化所有 provider client。模块 import 时不会创建任何连接。
 
     只在以下条件创建 provider：
-    - DeepSeek: 始终创建（ANTHROPIC_API_KEY 必须存在）
+    - DeepSeek: ANTHROPIC_API_KEY 非空
     - DashScope: DASHSCOPE_API_KEY 非空
     - MiniMax: MINIMAX_API_KEY 非空
     - GPT: OPENAI_API_KEY 和 OPENAI_BASE_URL 均非空
@@ -64,13 +81,14 @@ def _init_providers() -> dict:
     if PROVIDERS:
         return PROVIDERS
 
-    from anthropic import Anthropic
+    if DEEPSEEK_API_KEY:
+        from anthropic import Anthropic
 
-    PROVIDERS["deepseek"] = {
-        "type": "anthropic",
-        "client": Anthropic(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL),
-        "base_url": DEEPSEEK_BASE_URL or "",
-    }
+        PROVIDERS["deepseek"] = {
+            "type": "anthropic",
+            "client": Anthropic(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL),
+            "base_url": DEEPSEEK_BASE_URL or "",
+        }
 
     if DASHSCOPE_API_KEY:
         try:
@@ -117,4 +135,38 @@ def get_provider(key: str) -> dict | None:
 def get_default_client():
     """获取默认 DeepSeek client。"""
     _init_providers()
-    return PROVIDERS["deepseek"]["client"]
+    provider = PROVIDERS.get("deepseek")
+    if provider:
+        return provider["client"]
+    return MissingProviderClient("DeepSeek/Anthropic", "ANTHROPIC_API_KEY")
+
+
+def get_provider_status() -> dict:
+    """返回可展示给桌面端的 provider 配置状态，不泄露 API key。"""
+    _init_providers()
+    return {
+        "deepseek": {
+            "configured": bool(DEEPSEEK_API_KEY),
+            "base_url": DEEPSEEK_BASE_URL or "",
+            "default_model": DEFAULT_MODEL,
+            "env": "ANTHROPIC_API_KEY",
+        },
+        "dashscope": {
+            "configured": bool(DASHSCOPE_API_KEY),
+            "base_url": DASHSCOPE_BASE_URL,
+            "default_model": FALLBACK_COMPLEX[1],
+            "env": "DASHSCOPE_API_KEY",
+        },
+        "minimax": {
+            "configured": bool(MINIMAX_API_KEY),
+            "base_url": MINIMAX_BASE_URL,
+            "default_model": FALLBACK_MAJOR[1],
+            "env": "MINIMAX_API_KEY",
+        },
+        "gpt": {
+            "configured": bool(OPENAI_API_KEY and OPENAI_BASE_URL),
+            "base_url": OPENAI_BASE_URL or "",
+            "default_model": MANAGER_MAJOR_MODEL[1],
+            "env": "OPENAI_API_KEY + OPENAI_BASE_URL",
+        },
+    }

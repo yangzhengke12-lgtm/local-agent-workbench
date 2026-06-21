@@ -9,6 +9,7 @@ __pycache__/
 project_states/
 
 agent_tasks.json
+runtime_settings.json
 task_board.json
 team_knowledge.json
 worker_scores.json

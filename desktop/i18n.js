@@ -127,6 +127,9 @@ function setLang(lang) {
   localStorage.setItem('workbench_lang', lang);
   loadDict();
   refreshAllUI();
+  if (typeof saveSetting === 'function' && !(window.state && window.state._applyingSettings)) {
+    saveSetting('language', lang);
+  }
 }
 
 // ── 刷新所有 UI ──

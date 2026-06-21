@@ -6,7 +6,7 @@ import json
 import os
 from dataclasses import asdict
 
-from runtime.config import DEFAULT_MODEL, PROVIDERS, UPGRADE_TARGET, _init_providers
+from runtime.config import DEFAULT_MODEL, PROVIDERS, UPGRADE_TARGET
 from runtime.routing import select_worker_model
 from runtime.persistence import (
     _workers_config,
@@ -22,7 +22,6 @@ from runtime.tools import ALL_TOOLS, execute_tool, print_lock, track_api_call
 
 def load_workers(config_path: str = "workers.json") -> dict:
     """加载 workers.json，返回 { name: config } 映射。"""
-    _init_providers()
     # 懒加载 default_client
     from runtime.config import get_default_client
 

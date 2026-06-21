@@ -112,8 +112,25 @@ function startPythonServer() {
   });
 }
 
+function projectDir() {
+  return path.resolve(path.join(__dirname, '..'));
+}
+
+function samePath(a, b) {
+  if (!a || !b) return false;
+  const left = path.resolve(a);
+  const right = path.resolve(b);
+  return process.platform === 'win32'
+    ? left.toLowerCase() === right.toLowerCase()
+    : left === right;
+}
+
+function parseJsonSafe(text) {
+  try { return JSON.parse(text); } catch (_) { return null; }
+}
+
 // ── 健康检查：轮询 /health ──
-function checkHealth(retries) {
+function checkHealth(retries, requireSameProject = true) {
   return new Promise((resolve, reject) => {
     let attempts = 0;
 
@@ -124,8 +141,19 @@ function checkHealth(retries) {
         res.on('data', (chunk) => { body += chunk; });
         res.on('end', () => {
           if (res.statusCode === 200) {
-            safeLog('[main] Health check OK');
-            resolve();
+            const health = parseJsonSafe(body) || {};
+            if (requireSameProject && !samePath(health.project_dir, projectDir())) {
+              const actual = health.project_dir || '(unknown)';
+              reject(new Error(
+                `端口 ${PORT} 已被另一个 Agent 后端占用。\n` +
+                `当前桌面目录: ${projectDir()}\n` +
+                `端口上的后端: ${actual}\n\n` +
+                '请关闭旧桌面端/旧 server.py 后重新启动。'
+              ));
+              return;
+            }
+            safeLog(`[main] Health check OK (${health.project_dir || 'legacy health'})`);
+            resolve(health);
           } else if (attempts < retries) {
             setTimeout(tryHealth, HEALTH_INTERVAL_MS);
           } else {
@@ -212,14 +240,13 @@ app.whenReady().then(async () => {
     if (portFree) {
       safeLog(`[main] Port ${PORT} is free, starting Python backend...`);
       startPythonServer();
+      await checkHealth(HEALTH_RETRIES, true);
     } else {
       safeLog(`[main] Port ${PORT} is occupied, reusing existing server`);
+      await checkHealth(1, true);
     }
 
-    // 2. 等待健康检查
-    await checkHealth(HEALTH_RETRIES);
-
-    // 3. 创建窗口
+    // 2. 创建窗口
     createWindow();
   } catch (err) {
     dialog.showErrorBox(

@@ -166,6 +166,26 @@
       <span>任务 <strong id="status-task-count">0</strong></span>
       <span id="status-theme">Graphite</span>
     </div>
+    <section id="settings-view" aria-hidden="true">
+      <aside class="settings-sidebar">
+        <button id="settings-back" class="settings-back">← 返回工作台</button>
+        <div class="settings-search">
+          <span class="search-icon"></span>
+          <input id="settings-search-input" type="text" placeholder="搜索设置...">
+        </div>
+        <div id="settings-nav"></div>
+      </aside>
+      <main class="settings-main">
+        <div class="settings-head">
+          <div>
+            <h1>设置</h1>
+            <p id="settings-subtitle">本地 Agent 工作台配置</p>
+          </div>
+          <span id="settings-sync-state">未加载</span>
+        </div>
+        <div id="settings-content"></div>
+      </main>
+    </section>
     <div id="toast" role="status" aria-live="polite"></div>
   </div>
 
