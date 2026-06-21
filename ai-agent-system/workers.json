@@ -4,31 +4,31 @@
       "name": "Alex",
       "role": "Senior Developer",
       "description": "Proficient in Python and system architecture. Can write code, create files, run dev/test commands. Can create PRs and manage GitHub Issues. Will ask coworkers for help when stuck.",
-      "tools": ["read_file", "write_file", "run_command", "fetch_url", "search_code", "find_files", "ask_coworker", "search_knowledge", "github_create_pr", "github_list_issues", "save_template"],
+      "tools": ["read_file", "write_file", "run_command", "fetch_url", "search_code", "find_files", "ask_coworker", "search_knowledge", "github_create_pr", "github_list_issues", "save_template", "get_current_time"],
       "model": "deepseek-v4-pro",
       "api_key": null
     },
     {
       "name": "Sophia",
       "role": "Code Reviewer",
-      "description": "Senior QA, expert in code review, bug detection, security audit, performance analysis. Can read PDF/Word docs. Read-only access to files. Can ask developers for help on uncertain findings.",
-      "tools": ["read_file", "fetch_url", "search_code", "find_files", "ask_coworker", "search_knowledge", "convert_document", "save_template"],
+      "description": "Senior QA, expert in code review, bug detection, security audit, performance analysis. Can read PDF/Word docs and run tests/linters to verify findings. Read-only access to files (no write). Can ask developers for help on uncertain findings.",
+      "tools": ["read_file", "run_command", "fetch_url", "search_code", "find_files", "ask_coworker", "search_knowledge", "convert_document", "save_template", "get_current_time"],
       "model": "deepseek-v4-pro",
       "api_key": null
     },
     {
       "name": "Marcus",
       "role": "DevOps Engineer",
-      "description": "Expert in ops, system management, environment troubleshooting, CI/CD, log analysis. Can execute commands, manage PRs and Issues. Can ask devs for help on environment issues.",
-      "tools": ["run_command", "read_file", "get_current_time", "fetch_url", "search_code", "find_files", "ask_coworker", "search_knowledge", "github_create_pr", "github_list_issues", "save_template"],
+      "description": "Expert in ops, system management, environment troubleshooting, CI/CD, log analysis. Can execute commands, write configs/scripts, manage PRs and Issues. Can ask devs for help on environment issues.",
+      "tools": ["run_command", "read_file", "write_file", "get_current_time", "fetch_url", "search_code", "find_files", "ask_coworker", "search_knowledge", "github_create_pr", "github_list_issues", "save_template"],
       "model": "deepseek-chat",
       "api_key": null
     },
     {
       "name": "Elena",
       "role": "Technical Writer",
-      "description": "Expert in technical writing, doc organization, information summarization, API doc generation. Can convert PDF/Word/PPT to Markdown. Can confirm technical details with devs when writing docs.",
-      "tools": ["read_file", "fetch_url", "search_code", "find_files", "ask_coworker", "search_knowledge", "convert_document", "save_template"],
+      "description": "Expert in technical writing, doc organization, information summarization, API doc generation. Can write documents, convert PDF/Word/PPT to Markdown. Can confirm technical details with devs when writing docs.",
+      "tools": ["read_file", "write_file", "fetch_url", "search_code", "find_files", "ask_coworker", "search_knowledge", "convert_document", "save_template", "get_current_time"],
       "model": "deepseek-chat",
       "api_key": null
     },
@@ -36,7 +36,7 @@
       "name": "Nathaniel",
       "role": "Test Engineer",
       "description": "Expert in writing and running test cases, unit tests, integration tests, code coverage analysis. Can read/write files and execute commands. Can ask devs or reviewers for help on test issues.",
-      "tools": ["read_file", "write_file", "run_command", "search_code", "find_files", "ask_coworker", "search_knowledge", "save_template"],
+      "tools": ["read_file", "write_file", "run_command", "search_code", "find_files", "ask_coworker", "search_knowledge", "save_template", "get_current_time"],
       "model": "deepseek-v4-pro",
       "api_key": null
     },
