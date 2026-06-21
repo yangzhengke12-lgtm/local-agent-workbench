@@ -10,6 +10,7 @@ project_states/
 
 agent_tasks.json
 runtime_settings.json
+examples/demo_business.db
 task_board.json
 team_knowledge.json
 worker_scores.json

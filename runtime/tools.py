@@ -19,6 +19,8 @@ import urllib.error
 import urllib.request
 from datetime import datetime
 
+from runtime.business_connectors import database_query, internal_api_request
+
 from runtime.persistence import (
     _workers_config,
     _load_json,
@@ -357,6 +359,42 @@ ALL_TOOLS = {
             "required": ["pattern"],
         },
     },
+    "database_query": {
+        "name": "database_query",
+        "description": (
+            "查询本地 demo 业务 SQLite 数据库。只允许 SELECT/WITH 只读查询，"
+            "用于演示订单、客户、工单等业务数据接入。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "只读 SQL，例如 SELECT * FROM tickets WHERE status = 'open'",
+                },
+                "max_rows": {
+                    "type": "integer",
+                    "description": "最多返回行数，默认 20，最大 50",
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    "internal_api_request": {
+        "name": "internal_api_request",
+        "description": (
+            "调用受控的公司内部 API demo。只允许 GET 白名单路径，例如 "
+            "/tickets/ticket_9001、/orders/ord_1001、/customers/cust_001、/metrics/daily。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "白名单 API 路径"},
+                "params": {"type": "object", "description": "可选 query 参数"},
+            },
+            "required": ["path"],
+        },
+    },
 }
 
 
@@ -528,6 +566,26 @@ def execute_tool(name: str, args: dict) -> str:
 
     if name == "search_knowledge":
         return search_knowledge(args["query"])
+
+    if name == "database_query":
+        try:
+            return json.dumps(
+                database_query(args["query"], args.get("max_rows", 20)),
+                ensure_ascii=False,
+                indent=2,
+            )
+        except Exception as e:
+            return f"database_query 失败: {e}"
+
+    if name == "internal_api_request":
+        try:
+            return json.dumps(
+                internal_api_request("GET", args["path"], args.get("params") or {}),
+                ensure_ascii=False,
+                indent=2,
+            )
+        except Exception as e:
+            return f"internal_api_request 失败: {e}"
 
     if name == "ask_coworker":
         coworker_name = args["worker_name"]

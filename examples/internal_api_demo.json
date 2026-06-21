@@ -1,0 +1,55 @@
+{
+  "tickets": {
+    "ticket_9001": {
+      "ticket_id": "ticket_9001",
+      "customer_id": "cust_001",
+      "priority": "high",
+      "status": "open",
+      "summary": "API callback timeout during invoice sync",
+      "recommended_action": "Check retry queue and confirm invoice callback latency."
+    },
+    "ticket_9002": {
+      "ticket_id": "ticket_9002",
+      "customer_id": "cust_003",
+      "priority": "medium",
+      "status": "triaged",
+      "summary": "Refund webhook failed for one order",
+      "recommended_action": "Replay webhook after verifying refund state."
+    }
+  },
+  "orders": {
+    "ord_1001": {
+      "order_id": "ord_1001",
+      "status": "paid",
+      "amount": 8800,
+      "customer_id": "cust_001"
+    },
+    "ord_1003": {
+      "order_id": "ord_1003",
+      "status": "refunded",
+      "amount": 7600,
+      "customer_id": "cust_003"
+    }
+  },
+  "customers": {
+    "cust_001": {
+      "customer_id": "cust_001",
+      "name": "Northwind Retail",
+      "tier": "enterprise",
+      "city": "Shanghai"
+    },
+    "cust_003": {
+      "customer_id": "cust_003",
+      "name": "Blue Peak Logistics",
+      "tier": "enterprise",
+      "city": "Shenzhen"
+    }
+  },
+  "metrics": {
+    "daily": [
+      {"date": "2026-06-18", "open_tickets": 7, "paid_orders": 18, "refunds": 1},
+      {"date": "2026-06-19", "open_tickets": 9, "paid_orders": 21, "refunds": 0},
+      {"date": "2026-06-20", "open_tickets": 12, "paid_orders": 17, "refunds": 2}
+    ]
+  }
+}

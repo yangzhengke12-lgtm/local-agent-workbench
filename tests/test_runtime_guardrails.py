@@ -9,6 +9,7 @@ os.environ.setdefault("ANTHROPIC_API_KEY", "test-dummy-key")
 
 import manager
 from manager import execute_tool, select_worker_model, select_manager_model
+from runtime.business_connectors import database_query, ensure_demo_business_db, internal_api_request
 
 
 class TestRuntimeGuardrails(unittest.TestCase):
@@ -89,6 +90,49 @@ class TestRuntimeGuardrails(unittest.TestCase):
             manager.run_worker(worker, "first task", use_memory=True, fresh_session=True, session_scope="delegate")
 
         self.assertEqual(manager.worker_sessions, {})
+
+    def test_database_query_reads_demo_business_data(self):
+        db_path = ensure_demo_business_db()
+
+        result = database_query(
+            "SELECT ticket_id, priority, status FROM tickets WHERE status = 'open'",
+            max_rows=5,
+        )
+
+        self.assertTrue(os.path.exists(db_path))
+        self.assertEqual(result["safety"], "read_only_select")
+        self.assertEqual(result["row_count"], 1)
+        self.assertEqual(result["rows"][0]["ticket_id"], "ticket_9001")
+
+    def test_database_query_blocks_write_sql(self):
+        with self.assertRaises(ValueError):
+            database_query("DELETE FROM tickets")
+
+        with self.assertRaises(ValueError):
+            database_query("SELECT * FROM tickets; DROP TABLE tickets")
+
+    def test_internal_api_request_uses_demo_allowlist(self):
+        result = internal_api_request("GET", "/tickets/ticket_9001")
+
+        self.assertEqual(result["source"], "demo_internal_api")
+        self.assertEqual(result["data"]["ticket_id"], "ticket_9001")
+        self.assertIn("recommended_action", result["data"])
+
+    def test_internal_api_request_rejects_unlisted_path(self):
+        with self.assertRaises(ValueError):
+            internal_api_request("GET", "/admin/secrets")
+
+    def test_business_connectors_are_registered_tools(self):
+        db_result = execute_tool("database_query", {
+            "query": "SELECT customer_id, tier FROM customers WHERE tier = 'enterprise'",
+            "max_rows": 10,
+        })
+        api_result = execute_tool("internal_api_request", {"path": "/orders/ord_1001"})
+
+        self.assertIn("cust_001", db_result)
+        self.assertIn("read_only_select", db_result)
+        self.assertIn("ord_1001", api_result)
+        self.assertIn("demo_internal_api", api_result)
 
 
 if __name__ == "__main__":
