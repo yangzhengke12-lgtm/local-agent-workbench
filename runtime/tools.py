@@ -20,6 +20,7 @@ import urllib.request
 from datetime import datetime
 
 from runtime.business_connectors import database_query, internal_api_request
+from runtime.feishu_connector import send_feishu_message
 
 from runtime.persistence import (
     _workers_config,
@@ -395,6 +396,28 @@ ALL_TOOLS = {
             "required": ["path"],
         },
     },
+    "feishu_send_message": {
+        "name": "feishu_send_message",
+        "description": (
+            "Send a text message to the configured Feishu/Lark custom bot webhook. "
+            "Use it to push agent task results, reports, or alerts into a Feishu group. "
+            "The webhook URL is read from FEISHU_WEBHOOK_URL and cannot be provided by the agent."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "text": {
+                    "type": "string",
+                    "description": "Message body to send to the Feishu group.",
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Optional short title prepended to the message.",
+                },
+            },
+            "required": ["text"],
+        },
+    },
 }
 
 
@@ -586,6 +609,16 @@ def execute_tool(name: str, args: dict) -> str:
             )
         except Exception as e:
             return f"internal_api_request 失败: {e}"
+
+    if name == "feishu_send_message":
+        try:
+            return json.dumps(
+                send_feishu_message(args["text"], args.get("title")),
+                ensure_ascii=False,
+                indent=2,
+            )
+        except Exception as e:
+            return f"feishu_send_message failed: {e}"
 
     if name == "ask_coworker":
         coworker_name = args["worker_name"]

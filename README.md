@@ -10,12 +10,12 @@
 
 Local Agent Workbench 基于 FastAPI + Electron 构建，既可以通过桌面端操作，也可以通过标准 REST/WebSocket API 接入。它面向本地代码仓库、私有项目上下文、任务日志、结果检查和受控工具调用。
 
-[![Tests](https://img.shields.io/badge/tests-222%20passed-green)](.)
+[![Tests](https://img.shields.io/badge/tests-226%20passed-green)](.)
 [![Python](https://img.shields.io/badge/python-3.12-blue)](.)
 [![FastAPI](https://img.shields.io/badge/backend-FastAPI-009688)](.)
 [![Electron](https://img.shields.io/badge/desktop-Electron-47848F)](.)
 
-> 当前定位：本地项目工作台。联网搜索、企业 SSO、安装包、飞书/Jira/GitLab/数据库等外部系统，适合作为后续 tool/provider adapter 接入。
+> 当前定位：本地项目工作台。已包含数据库、内部 API 和飞书群通知的最小 connector demo；联网搜索、企业 SSO、安装包和更深的 Jira/GitLab/飞书双向应用适合作为后续 tool/provider adapter 接入。
 
 ### 为什么做这个
 
@@ -36,8 +36,8 @@ create task -> validate input -> run in background -> stream status/logs -> insp
 | **可观测运行时** | 任务状态、进度、日志、结果预览、完整详情、取消任务、WebSocket 推送 |
 | **多 Agent Runtime** | Manager + Deputy + 5 Workers，验证闭环、DAG Pipeline、工具权限、JSON 持久化 |
 | **设置与启动稳定性** | `/agent/settings` 持久化工作区和默认任务偏好；Electron 校验后端项目目录，避免误连旧服务 |
-| **业务连接器 Demo** | `database_query` 只读 SQLite 业务库 + `internal_api_request` 内部 API 白名单请求 |
-| **工程化质量** | `runtime/` 模块化拆分，无 runtime 到 manager 的反向依赖，222 个自动化测试 |
+| **业务连接器 Demo** | `database_query` 只读 SQLite 业务库 + `internal_api_request` 内部 API 白名单请求 + `feishu_send_message` 飞书群通知 |
+| **工程化质量** | `runtime/` 模块化拆分，无 runtime 到 manager 的反向依赖，226 个自动化测试 |
 
 ### 架构
 
@@ -149,7 +149,7 @@ curl http://localhost:8000/agent/tasks/<task_id>/result
 
 如果要接入企业知识库、飞书、Jira、GitLab、数据库或内部 API，请看 [docs/integration_guide.md](docs/integration_guide.md)。
 
-仓库已包含最小可运行业务连接器 demo：只读 SQLite 数据库查询和内部 API 白名单请求，见 [docs/business_connectors.md](docs/business_connectors.md)。
+仓库已包含最小可运行业务连接器 demo：只读 SQLite 数据库查询、内部 API 白名单请求和飞书自定义机器人通知，见 [docs/business_connectors.md](docs/business_connectors.md)。
 
 ### API 接口
 
@@ -207,7 +207,7 @@ local-agent-workbench/
 - 支持后台执行长任务。
 - 日志和结果可以从 UI/API 检查。
 - 外部系统放在 tool adapter 后面，而不是写死在 prompt 里。
-- 内置最小业务连接器 demo，可展示数据库/内部 API 如何进入 Agent 工作流。
+- 内置最小业务连接器 demo，可展示数据库、内部 API 和飞书群通知如何进入 Agent 工作流。
 - 默认 local-first，更适合私有代码仓库和内部项目上下文。
 
 ### 安全边界
@@ -226,7 +226,7 @@ local-agent-workbench/
 - 生产级数据库后端
 - 企业认证 / SSO
 - 打包安装器
-- 飞书、Jira、GitLab、SQL 等公司系统适配器
+- 飞书入站 Bot 事件、Jira/GitLab 写入适配器或其他更深的公司系统适配器
 
 ### 测试
 
@@ -237,7 +237,7 @@ python -m pytest -q
 预期结果：
 
 ```text
-222 passed
+226 passed
 ```
 
 桌面端 JavaScript 语法检查：
@@ -262,12 +262,12 @@ MIT
 
 Local Agent Workbench is a FastAPI + Electron project that lets you run a multi-agent runtime from a desktop UI or a standard REST/WebSocket API. It is built for local repositories, private project context, task logs, result inspection, and controlled tool execution.
 
-[![Tests](https://img.shields.io/badge/tests-222%20passed-green)](.)
+[![Tests](https://img.shields.io/badge/tests-226%20passed-green)](.)
 [![Python](https://img.shields.io/badge/python-3.12-blue)](.)
 [![FastAPI](https://img.shields.io/badge/backend-FastAPI-009688)](.)
 [![Electron](https://img.shields.io/badge/desktop-Electron-47848F)](.)
 
-> Current scope: local project workbench. Public web search, enterprise SSO, packaged installers, and external business systems are designed as future tool/provider adapters.
+> Current scope: local project workbench. It includes minimal connector demos for databases, internal APIs, and Feishu/Lark group notifications. Public web search, enterprise SSO, packaged installers, and deeper Jira/GitLab/Feishu two-way apps are future tool/provider adapters.
 
 ### Why This Exists
 
@@ -288,8 +288,8 @@ That makes it easier to connect agents to real product surfaces: desktop apps, i
 | **Observable runtime** | Task status, progress, logs, result previews, full details, cancellation, and WebSocket updates |
 | **Multi-agent runtime** | Manager + Deputy + 5 workers, verification loop, DAG pipeline, tool permissions, and JSON persistence |
 | **Settings and startup safety** | `/agent/settings` persists workspace/default task preferences; Electron verifies backend project identity before reuse |
-| **Business connector demo** | `database_query` read-only SQLite business data + `internal_api_request` allowlisted internal API calls |
-| **Engineering hygiene** | Modular `runtime/` package, no runtime-to-manager reverse dependency, 222 automated tests |
+| **Business connector demo** | `database_query` read-only SQLite business data + `internal_api_request` allowlisted internal API calls + `feishu_send_message` Feishu/Lark group notifications |
+| **Engineering hygiene** | Modular `runtime/` package, no runtime-to-manager reverse dependency, 226 automated tests |
 
 ### How It Works
 
@@ -399,7 +399,7 @@ For the complete integration guide, see [agent_api.md](agent_api.md).
 
 For business system integrations such as knowledge bases, Feishu, Jira, GitLab, databases, or internal APIs, see [docs/integration_guide.md](docs/integration_guide.md).
 
-The repository also includes a minimal runnable connector demo for read-only SQLite business queries and allowlisted internal API calls: [docs/business_connectors.md](docs/business_connectors.md).
+The repository also includes minimal runnable connector demos for read-only SQLite business queries, allowlisted internal API calls, and Feishu/Lark custom bot notifications: [docs/business_connectors.md](docs/business_connectors.md).
 
 ### API Surface
 
@@ -457,7 +457,7 @@ local-agent-workbench/
 - Supports long-running work through background execution.
 - Makes logs and results inspectable from UI and API.
 - Keeps external integrations behind tool adapters instead of hardcoding them into prompts.
-- Includes a minimal business connector demo for showing how databases/internal APIs enter agent workflows.
+- Includes minimal business connector demos for showing how databases/internal APIs and Feishu/Lark notifications enter agent workflows.
 - Local-first by default, which fits private repositories and internal project context.
 
 ### Safety Boundaries
@@ -476,7 +476,7 @@ Not included by default:
 - production database backend
 - enterprise auth / SSO
 - packaged installer
-- Feishu, Jira, GitLab, SQL, or other company-system adapters
+- inbound Feishu bot events, Jira/GitLab write adapters, or other deeper company-system adapters
 
 ### Tests
 
@@ -487,7 +487,7 @@ python -m pytest -q
 Expected:
 
 ```text
-222 passed
+226 passed
 ```
 
 Desktop JavaScript syntax check:

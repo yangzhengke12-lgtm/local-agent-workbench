@@ -10,6 +10,22 @@ os.environ.setdefault("ANTHROPIC_API_KEY", "test-dummy-key")
 import manager
 from manager import execute_tool, select_worker_model, select_manager_model
 from runtime.business_connectors import database_query, ensure_demo_business_db, internal_api_request
+from runtime.feishu_connector import build_feishu_text_payload, send_feishu_message
+
+
+class _FakeHTTPResponse:
+    def __init__(self, body='{"code":0,"msg":"success"}', status=200):
+        self._body = body.encode("utf-8")
+        self.status = status
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def read(self):
+        return self._body
 
 
 class TestRuntimeGuardrails(unittest.TestCase):
@@ -133,6 +149,54 @@ class TestRuntimeGuardrails(unittest.TestCase):
         self.assertIn("read_only_select", db_result)
         self.assertIn("ord_1001", api_result)
         self.assertIn("demo_internal_api", api_result)
+
+    def test_feishu_payload_supports_optional_signature(self):
+        payload = build_feishu_text_payload(
+            "部署完成",
+            title="Agent 通知",
+            secret="test-secret",
+            timestamp=100,
+        )
+
+        self.assertEqual(payload["msg_type"], "text")
+        self.assertEqual(payload["timestamp"], "100")
+        self.assertIn("sign", payload)
+        self.assertIn("[Agent 通知]", payload["content"]["text"])
+
+    def test_feishu_send_message_requires_configured_webhook(self):
+        with patch.dict(os.environ, {"FEISHU_WEBHOOK_URL": "", "FEISHU_WEBHOOK_SECRET": ""}, clear=False):
+            with self.assertRaises(ValueError) as ctx:
+                send_feishu_message("hello")
+
+        self.assertIn("FEISHU_WEBHOOK_URL", str(ctx.exception))
+
+    def test_feishu_send_message_posts_to_configured_webhook(self):
+        webhook = "https://open.feishu.cn/open-apis/bot/v2/hook/test-token"
+        captured = {}
+
+        def fake_urlopen(req, timeout=10):
+            captured["url"] = req.full_url
+            captured["timeout"] = timeout
+            captured["body"] = req.data.decode("utf-8")
+            captured["content_type"] = req.headers.get("Content-type")
+            return _FakeHTTPResponse()
+
+        with patch.dict(os.environ, {"FEISHU_WEBHOOK_URL": webhook, "FEISHU_WEBHOOK_SECRET": ""}, clear=False):
+            with patch("runtime.feishu_connector.urllib.request.urlopen", side_effect=fake_urlopen):
+                result = send_feishu_message("任务完成", title="Workbench")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(captured["url"], webhook)
+        self.assertIn("任务完成", captured["body"])
+        self.assertIn("Workbench", captured["body"])
+
+    def test_feishu_tool_is_registered(self):
+        self.assertIn("feishu_send_message", manager.ALL_TOOLS)
+
+        with patch("runtime.tools.send_feishu_message", return_value={"ok": True, "status": 200}):
+            result = execute_tool("feishu_send_message", {"text": "日报已生成", "title": "Agent"})
+
+        self.assertIn('"ok": true', result.lower())
 
 
 if __name__ == "__main__":

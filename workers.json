@@ -12,7 +12,7 @@
       "name": "Sophia",
       "role": "Code Reviewer",
       "description": "Senior QA, expert in code review, bug detection, security audit, performance analysis. Can read PDF/Word docs. Read-only access to files. Can ask developers for help on uncertain findings.",
-      "tools": ["read_file", "fetch_url", "search_code", "find_files", "ask_coworker", "search_knowledge", "database_query", "internal_api_request", "convert_document", "save_template"],
+      "tools": ["read_file", "fetch_url", "search_code", "find_files", "ask_coworker", "search_knowledge", "database_query", "internal_api_request", "convert_document", "feishu_send_message", "save_template"],
       "model": "deepseek-v4-pro",
       "api_key": null
     },
@@ -20,7 +20,7 @@
       "name": "Marcus",
       "role": "DevOps Engineer",
       "description": "Expert in ops, system management, environment troubleshooting, CI/CD, log analysis. Can execute commands, manage PRs and Issues. Can ask devs for help on environment issues.",
-      "tools": ["run_command", "read_file", "get_current_time", "fetch_url", "search_code", "find_files", "ask_coworker", "search_knowledge", "internal_api_request", "github_create_pr", "github_list_issues", "save_template"],
+      "tools": ["run_command", "read_file", "get_current_time", "fetch_url", "search_code", "find_files", "ask_coworker", "search_knowledge", "internal_api_request", "feishu_send_message", "github_create_pr", "github_list_issues", "save_template"],
       "model": "deepseek-chat",
       "api_key": null
     },
@@ -28,7 +28,7 @@
       "name": "Elena",
       "role": "Technical Writer",
       "description": "Expert in technical writing, doc organization, information summarization, API doc generation. Can convert PDF/Word/PPT to Markdown. Can confirm technical details with devs when writing docs.",
-      "tools": ["read_file", "fetch_url", "search_code", "find_files", "ask_coworker", "search_knowledge", "internal_api_request", "convert_document", "save_template"],
+      "tools": ["read_file", "fetch_url", "search_code", "find_files", "ask_coworker", "search_knowledge", "internal_api_request", "convert_document", "feishu_send_message", "save_template"],
       "model": "deepseek-chat",
       "api_key": null
     },
