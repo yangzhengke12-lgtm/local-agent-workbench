@@ -28,7 +28,7 @@
       "name": "Elena",
       "role": "Technical Writer",
       "description": "Expert in technical writing, doc organization, information summarization, API doc generation. Can convert PDF/Word/PPT to Markdown. Can confirm technical details with devs when writing docs.",
-      "tools": ["read_file", "fetch_url", "search_code", "find_files", "ask_coworker", "search_knowledge", "internal_api_request", "convert_document", "feishu_send_message", "save_template"],
+      "tools": ["read_file", "fetch_url", "search_code", "find_files", "git_inspect", "ask_coworker", "search_knowledge", "internal_api_request", "convert_document", "feishu_send_message", "save_template"],
       "model": "deepseek-chat",
       "api_key": null
     },

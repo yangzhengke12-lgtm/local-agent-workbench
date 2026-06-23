@@ -222,6 +222,8 @@ def call_llm_multi_turn(provider_key: str, model_id: str, messages: list,
     total_reads = 0
     total_writes = 0
     tool_call_history: dict[str, int] = {}
+    tool_result_cache: dict[str, str] = {}
+    blocked_tool_names: set[str] = set()
     write_content_hashes: dict[str, int] = {}
     write_budget_exceeded = False
     force_break_loop = False
@@ -233,6 +235,7 @@ def call_llm_multi_turn(provider_key: str, model_id: str, messages: list,
 
     for _turn in range(max_turns):
         force_stop = False
+        restart_turn_early = False
         if repeat_count >= 3:
             messages.append({
                 "role": "user",
@@ -255,8 +258,13 @@ def call_llm_multi_turn(provider_key: str, model_id: str, messages: list,
             })
 
         safe_messages = sanitize_messages_for_provider(messages, provider_key)
+        available_tools = [
+            tool for tool in (tools or [])
+            if tool.get("name") not in blocked_tool_names
+        ]
+        available_tool_names = {tool.get("name") for tool in available_tools}
         blocks = call_llm(provider_key, model_id, safe_messages,
-                          system_prompt=system_prompt, tools=tools,
+                          system_prompt=system_prompt, tools=available_tools,
                           max_tokens=max_tokens,
                           disable_thinking=disable_thinking)
 
@@ -276,6 +284,24 @@ def call_llm_multi_turn(provider_key: str, model_id: str, messages: list,
                 tool_name = block["name"]
                 tool_args = block["input"]
                 tool_id = block["id"]
+
+                if tools is not None and tool_name not in available_tool_names:
+                    result = (
+                        f"TOOL_DISABLED: {tool_name} 当前不可用。"
+                        "请不要再次调用它，改为基于已有信息完成总结，"
+                        "或选择其它仍然可用的工具继续。"
+                    )
+                    if log_callback:
+                        log_callback(tool_name, tool_args, result)
+                    assistant_content.append(block)
+                    messages.append({"role": "assistant", "content": assistant_content})
+                    assistant_content = []
+                    messages.append({
+                        "role": "user",
+                        "content": [{"type": "tool_result", "tool_use_id": tool_id, "content": result}],
+                    })
+                    restart_turn_early = True
+                    break
 
                 tool_sig = f"{tool_name}:{json.dumps(tool_args, sort_keys=True, ensure_ascii=False)}"
                 if tool_sig == last_tool_sig:
@@ -356,9 +382,21 @@ def call_llm_multi_turn(provider_key: str, model_id: str, messages: list,
                         force_break_loop = True
                         if not guard_reason:
                             guard_reason = "repeated_tool_call_blocked"
+                    elif dedup_count == 2 and dedup_key in tool_result_cache:
+                        blocked_tool_names.add(tool_name)
+                        cached = tool_result_cache[dedup_key]
+                        result = (
+                            f"DUPLICATE_TOOL_RESULT: 你已经拿到过同一工具与同一参数的结果。"
+                            f"系统已暂时禁用 {tool_name} 的后续同参调用。"
+                            "请直接基于下面的缓存结果继续完成任务；"
+                            "如果需要下一步动作，请改为调用别的工具或直接给出结论。\n\n"
+                            f"{cached}"
+                        )
+                        restart_turn_early = True
                     else:
                         try:
                             result = tool_executor(tool_name, tool_args)
+                            tool_result_cache[dedup_key] = result
                             if tool_name == "write_file" and "成功" in str(result):
                                 first_write_success = True
                         except Exception as e:
@@ -375,12 +413,17 @@ def call_llm_multi_turn(provider_key: str, model_id: str, messages: list,
                     "role": "user",
                     "content": [{"type": "tool_result", "tool_use_id": tool_id, "content": result}],
                 })
+                if restart_turn_early:
+                    break
 
         if assistant_content and not any(b.get("type") == "text" for b in assistant_content):
             assistant_content.insert(0, {"type": "text", "text": "[分析中]"})
 
         if assistant_content:
             messages.append({"role": "assistant", "content": assistant_content})
+
+        if restart_turn_early:
+            continue
 
         if not has_tool_use or force_break_loop:
             break

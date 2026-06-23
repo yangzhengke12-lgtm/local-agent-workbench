@@ -17,6 +17,11 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+from dotenv import load_dotenv
+
+
+load_dotenv()
+
 
 MAX_TEXT_CHARS = 4000
 ALLOWED_WEBHOOK_PREFIXES = (

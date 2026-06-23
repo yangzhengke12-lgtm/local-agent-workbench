@@ -3,6 +3,7 @@ import os
 import sys
 import tempfile
 import unittest
+import json
 from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -585,6 +586,69 @@ class TestTaskPersistence(unittest.TestCase):
         TaskStore.save(task)
         tasks_after = TaskStore.list_all()
         self.assertGreaterEqual(len(tasks_after), len(tasks_before))
+
+    def test_recover_incomplete_marks_running_task_failed(self):
+        task = AgentTask(
+            task_id="task_recover_running",
+            type="worker_task",
+            description="recover 测试",
+            worker_name="Alex",
+            status="running",
+            progress="执行中",
+        )
+        TaskStore.save(task)
+
+        recovered = TaskStore.recover_incomplete("测试恢复")
+        loaded = TaskStore.get("task_recover_running")
+
+        self.assertGreaterEqual(recovered, 1)
+        self.assertEqual(loaded.status, "failed")
+        self.assertEqual(loaded.progress, "执行中断")
+        self.assertIn("测试恢复", loaded.error)
+        self.assertTrue(any("系统恢复" in line for line in loaded.logs))
+
+    def test_load_falls_back_to_backup_file(self):
+        from runtime import agent_task as agent_task_module
+
+        original_main = agent_task_module._TASKS_FILE
+        original_backup = agent_task_module._TASKS_BACKUP_FILE
+        original_cache = dict(agent_task_module._tasks_cache)
+        with tempfile.TemporaryDirectory() as tmp:
+            main_file = os.path.join(tmp, "agent_tasks.json")
+            backup_file = f"{main_file}.bak"
+            with open(main_file, "w", encoding="utf-8") as f:
+                f.write("{bad json")
+            with open(backup_file, "w", encoding="utf-8") as f:
+                json.dump([{
+                    "task_id": "task_backup_ok",
+                    "type": "worker_task",
+                    "status": "completed",
+                    "description": "backup",
+                    "worker_name": "Alex",
+                    "project_name": None,
+                    "workspace_path": None,
+                    "progress": "完成",
+                    "logs": [],
+                    "result": "ok",
+                    "artifacts": [],
+                    "error": None,
+                    "created_at": "2026-01-01 00:00:00",
+                    "updated_at": "2026-01-01 00:00:00",
+                    "cancel_requested": False,
+                }], f, ensure_ascii=False, indent=2)
+
+            try:
+                agent_task_module._TASKS_FILE = main_file
+                agent_task_module._TASKS_BACKUP_FILE = backup_file
+                agent_task_module._tasks_cache = {}
+                loaded = TaskStore.load()
+            finally:
+                agent_task_module._TASKS_FILE = original_main
+                agent_task_module._TASKS_BACKUP_FILE = original_backup
+                agent_task_module._tasks_cache = original_cache
+
+        self.assertIn("task_backup_ok", loaded)
+        self.assertEqual(loaded["task_backup_ok"].result, "ok")
 
 
 if __name__ == "__main__":

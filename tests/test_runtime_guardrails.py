@@ -1,4 +1,5 @@
 import os
+import json
 import sys
 import tempfile
 import unittest
@@ -78,7 +79,12 @@ class TestRuntimeGuardrails(unittest.TestCase):
 
     def test_repeated_tool_call_forces_runtime_stop(self):
         messages = [{"role": "user", "content": "fetch once"}]
-        blocks = [[{"type": "tool_use", "id": f"tool-{i}", "name": "fetch_url", "input": {"url": "https://example.com"}}] for i in range(4)]
+        blocks = [
+            [{"type": "tool_use", "id": "tool-1", "name": "fetch_url", "input": {"url": "https://example.com"}}],
+            [{"type": "tool_use", "id": "tool-2", "name": "fetch_url", "input": {"url": "https://example.com"}}],
+            [{"type": "tool_use", "id": "tool-3", "name": "fetch_url", "input": {"url": "https://example.com"}}],
+            [{"type": "text", "text": '{"status":"needs_review","summary":"stopped","artifacts":[]}'}],
+        ]
 
         with patch("runtime.llm.call_llm", side_effect=blocks):
             result = manager.call_llm_multi_turn(
@@ -90,8 +96,99 @@ class TestRuntimeGuardrails(unittest.TestCase):
                 max_turns=5,
             )
 
-        self.assertIn("repeated_tool_call_blocked", result)
         self.assertIn("needs_review", result)
+
+    def test_second_duplicate_tool_call_returns_cached_result_hint(self):
+        messages = [{"role": "user", "content": "inspect once"}]
+        blocks = [
+            [{"type": "tool_use", "id": "tool-1", "name": "fetch_url", "input": {"url": "https://example.com"}}],
+            [{"type": "tool_use", "id": "tool-2", "name": "fetch_url", "input": {"url": "https://example.com"}}],
+            [{"type": "text", "text": "done"}],
+        ]
+
+        seen_results = []
+        tools_seen_by_model = []
+
+        def fake_tool(name, args):
+            seen_results.append((name, args))
+            return "HTTP 200\\nok"
+
+        def fake_call_llm(provider_key, model_id, messages, system_prompt="", tools=None, **kwargs):
+            tools_seen_by_model.append([tool.get("name") for tool in (tools or [])])
+            return blocks.pop(0)
+
+        with patch("runtime.llm.call_llm", side_effect=fake_call_llm):
+            result = manager.call_llm_multi_turn(
+                provider_key="deepseek",
+                model_id="deepseek-v4-pro[1M]",
+                messages=messages,
+                tools=[{"name": "fetch_url", "input_schema": {"type": "object", "properties": {}}}],
+                execute_tool_fn=fake_tool,
+                max_turns=5,
+            )
+
+        self.assertEqual(len(seen_results), 1)
+        self.assertEqual(result, "done")
+        self.assertEqual(tools_seen_by_model[0], ["fetch_url"])
+        self.assertEqual(tools_seen_by_model[-1], [])
+
+    def test_duplicate_tool_call_restarts_turn_before_third_repeat(self):
+        messages = [{"role": "user", "content": "inspect once"}]
+        blocks = [
+            [
+                {"type": "tool_use", "id": "tool-1", "name": "fetch_url", "input": {"url": "https://example.com"}},
+                {"type": "tool_use", "id": "tool-2", "name": "fetch_url", "input": {"url": "https://example.com"}},
+                {"type": "tool_use", "id": "tool-3", "name": "fetch_url", "input": {"url": "https://example.com"}},
+            ],
+            [{"type": "text", "text": "final"}],
+        ]
+
+        seen_results = []
+
+        def fake_tool(name, args):
+            seen_results.append((name, args))
+            return "HTTP 200\\nok"
+
+        with patch("runtime.llm.call_llm", side_effect=blocks):
+            result = manager.call_llm_multi_turn(
+                provider_key="deepseek",
+                model_id="deepseek-v4-pro[1M]",
+                messages=messages,
+                tools=[{"name": "fetch_url", "input_schema": {"type": "object", "properties": {}}}],
+                execute_tool_fn=fake_tool,
+                max_turns=5,
+            )
+
+        self.assertEqual(len(seen_results), 1)
+        self.assertEqual(result, "final")
+
+    def test_disabled_tool_is_not_executed_again(self):
+        messages = [{"role": "user", "content": "inspect once"}]
+        blocks = [
+            [{"type": "tool_use", "id": "tool-1", "name": "fetch_url", "input": {"url": "https://example.com"}}],
+            [{"type": "tool_use", "id": "tool-2", "name": "fetch_url", "input": {"url": "https://example.com"}}],
+            [{"type": "tool_use", "id": "tool-3", "name": "fetch_url", "input": {"url": "https://example.com"}}],
+            [{"type": "text", "text": "final"}],
+        ]
+
+        seen_results = []
+
+        def fake_tool(name, args):
+            seen_results.append((name, args))
+            return "HTTP 200\\nok"
+
+        with patch("runtime.llm.call_llm", side_effect=blocks):
+            result = manager.call_llm_multi_turn(
+                provider_key="deepseek",
+                model_id="deepseek-v4-pro[1M]",
+                messages=messages,
+                tools=[{"name": "fetch_url", "input_schema": {"type": "object", "properties": {}}}],
+                execute_tool_fn=fake_tool,
+                max_turns=6,
+            )
+
+        self.assertEqual(len(seen_results), 1)
+        self.assertEqual(result, "final")
     def test_fresh_session_does_not_persist_worker_memory(self):
         manager.worker_sessions.clear()
         worker = {
@@ -150,6 +247,13 @@ class TestRuntimeGuardrails(unittest.TestCase):
         self.assertIn("ord_1001", api_result)
         self.assertIn("demo_internal_api", api_result)
 
+    def test_git_inspect_report_mode_returns_compound_summary(self):
+        result = execute_tool("git_inspect", {"mode": "report", "limit": 3})
+
+        self.assertIn("[git status]", result)
+        self.assertIn("[git diff --stat]", result)
+        self.assertIn("[recent commits]", result)
+
     def test_feishu_payload_supports_optional_signature(self):
         payload = build_feishu_text_payload(
             "部署完成",
@@ -197,6 +301,52 @@ class TestRuntimeGuardrails(unittest.TestCase):
             result = execute_tool("feishu_send_message", {"text": "日报已生成", "title": "Agent"})
 
         self.assertIn('"ok": true', result.lower())
+
+    def test_run_worker_fallback_sends_feishu_report(self):
+        worker = {
+            "name": "Elena",
+            "role": "Technical Writer",
+            "tools": [
+                manager.ALL_TOOLS["git_inspect"],
+                manager.ALL_TOOLS["feishu_send_message"],
+            ],
+            "tool_names": ["git_inspect", "feishu_send_message"],
+            "model": "deepseek-chat",
+        }
+
+        fake_report = (
+            "[git status]\n"
+            "M README.md\n"
+            " M desktop/main.js\n"
+            " M runtime/agent_task.py\n"
+            " M runtime/tools.py\n"
+            " M tests/test_agent_api.py\n\n"
+            "[git diff --stat]\n"
+            "README.md | 10 +++++\n\n"
+            "[recent commits]\n"
+            "abc123 fix desktop backend restart\n"
+        )
+
+        def fake_exec(name, args):
+            if name == "git_inspect":
+                return fake_report
+            if name == "feishu_send_message":
+                return '{"ok": true, "status": 200, "msg": "success"}'
+            return f"unexpected tool {name}"
+
+        with patch("runtime.workers.call_llm_multi_turn", return_value='{"status":"needs_review","summary":"Runtime guard stopped tool execution.","artifacts":[]}'):
+            with patch("runtime.workers.execute_tool", side_effect=fake_exec):
+                result = manager.run_worker(
+                    worker,
+                    "请整理日报并发送到飞书",
+                    use_memory=False,
+                    fresh_session=True,
+                )
+
+        payload = json.loads(result["result"])
+        self.assertEqual(payload["status"], "success")
+        self.assertTrue(payload["delivery"]["ok"])
+        self.assertIn("飞书发送：成功", payload["summary"])
 
 
 if __name__ == "__main__":
