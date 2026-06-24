@@ -30,6 +30,29 @@ CODE_EDIT_SIGNALS = [
 ]
 
 
+def _provider_default_route(provider_key: str, tier_key: str) -> tuple | None:
+    if provider_key == "gpt":
+        model_id = MODEL_TIERS["major"][1] if tier_key == "major" else UPGRADE_TARGET[1]
+        return (provider_key, model_id)
+    if provider_key == "dashscope":
+        return FALLBACK_COMPLEX
+    if provider_key == "minimax":
+        return FALLBACK_MAJOR
+    if provider_key == "deepseek":
+        return MODEL_TIERS.get(tier_key, MODEL_TIERS["normal"])
+    return None
+
+
+def _first_configured_route(tier_key: str) -> tuple | None:
+    for provider_key in ("gpt", "dashscope", "minimax", "deepseek"):
+        if provider_key not in PROVIDERS:
+            continue
+        route = _provider_default_route(provider_key, tier_key)
+        if route:
+            return route
+    return None
+
+
 def _resolve_route(tier_key: str) -> tuple:
     """解析路由，只返回已配置 provider；否则回退到 DeepSeek。"""
     route = MODEL_TIERS.get(tier_key, MODEL_TIERS["normal"])
@@ -39,6 +62,10 @@ def _resolve_route(tier_key: str) -> tuple:
     fallback = FALLBACK_MAJOR if tier_key == "major" else FALLBACK_COMPLEX
     if fallback[0] in PROVIDERS:
         return fallback
+
+    configured_route = _first_configured_route(tier_key)
+    if configured_route:
+        return configured_route
 
     return ("deepseek", "deepseek-v4-pro[1M]")
 
@@ -78,7 +105,7 @@ def select_worker_model(task: str, worker_name: str,
         if UPGRADE_TARGET[0] in PROVIDERS:
             route = UPGRADE_TARGET
         else:
-            route = FALLBACK_COMPLEX
+            route = _resolve_route("complex")
         return (route, "complex",
                 f"{worker_name} 前次模型连续 {previous_failures} 次失败，自动升级到 [{route[0]}]{route[1]}")
 

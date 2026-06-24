@@ -25,6 +25,7 @@
 - 后端掉线后自动探测并尝试恢复
 - 重启后自动回收旧的 `pending/running` 任务，避免界面一直假装在运行
 - 提供最小可落地业务接入 demo：只读 SQLite、白名单 internal API、Feishu 群通知
+- 支持飞书开放平台事件订阅：群消息创建 Agent 任务，任务完成后回填原群聊
 - 支持让 Elena 读取仓库变更，生成总结，并发到飞书群
 
 ### 一眼看懂
@@ -165,6 +166,7 @@ curl http://localhost:8000/agent/tasks/<task_id>/result
 - 完整 API 接入说明见 [agent_api.md](agent_api.md)
 - 业务系统接入说明见 [docs/integration_guide.md](docs/integration_guide.md)
 - 最小业务 connector demo 见 [docs/business_connectors.md](docs/business_connectors.md)
+- 飞书开放平台双向接入完整流程见 [docs/feishu_integration.md](docs/feishu_integration.md)
 
 ### API 接口
 
@@ -176,6 +178,8 @@ GET    /agent/workers
 GET    /agent/settings
 PATCH  /agent/settings
 GET    /agent/runtime
+GET    /integrations/feishu/status
+POST   /integrations/feishu/events
 POST   /agent/tasks
 GET    /agent/tasks
 GET    /agent/tasks/{task_id}
@@ -190,6 +194,7 @@ WS     /ws
 
 ```text
 worker_task
+manager_task
 verified_task
 project_pipeline_task
 ```
@@ -205,6 +210,7 @@ local-agent-workbench/
 |   |-- agent_task.py             # Task model, store, executor
 |   |-- business_connectors.py    # SQLite / internal API connector adapters
 |   |-- feishu_connector.py       # Feishu/Lark webhook delivery
+|   |-- feishu_inbound.py         # Feishu/Lark event parsing and idempotency
 |   |-- pipeline.py               # DAG pipeline execution
 |   |-- tools.py                  # Tool schemas and execution
 |   |-- workers.py                # Worker execution
@@ -246,7 +252,7 @@ local-agent-workbench/
 - 内置 RAG / 向量数据库
 - 企业 SSO / 权限系统
 - 生产级数据库直连适配器
-- 飞书入站事件、交互卡片、双向机器人能力
+- 加密飞书事件、交互卡片、用户权限映射、Jira/GitLab 写入适配器
 - 安装包或一键 exe 分发方案
 
 ### 测试
@@ -287,6 +293,7 @@ It turns a prompt-driven agent demo into an observable, async task system. You c
 - Detect backend loss and try to recover automatically
 - Recover stale `pending/running` tasks after restart instead of leaving the UI stuck forever
 - Ship minimal business integration demos for read-only SQLite, allowlisted internal APIs, and Feishu/Lark notifications
+- Receive Feishu/Lark app events, create Agent tasks from group messages, and reply to the source chat
 - Let Elena inspect repository changes, write a short summary, and send it to a Feishu/Lark group
 
 ### At A Glance
@@ -427,6 +434,7 @@ Further reading:
 - Full API guide: [agent_api.md](agent_api.md)
 - Business/system integration guide: [docs/integration_guide.md](docs/integration_guide.md)
 - Minimal business connector demos: [docs/business_connectors.md](docs/business_connectors.md)
+- Full Feishu/Lark Open Platform setup: [docs/feishu_integration.md](docs/feishu_integration.md)
 
 ### API Surface
 
@@ -438,6 +446,8 @@ GET    /agent/workers
 GET    /agent/settings
 PATCH  /agent/settings
 GET    /agent/runtime
+GET    /integrations/feishu/status
+POST   /integrations/feishu/events
 POST   /agent/tasks
 GET    /agent/tasks
 GET    /agent/tasks/{task_id}
@@ -452,6 +462,7 @@ Task types:
 
 ```text
 worker_task
+manager_task
 verified_task
 project_pipeline_task
 ```
@@ -467,6 +478,7 @@ local-agent-workbench/
 |   |-- agent_task.py             # Task model, store, executor
 |   |-- business_connectors.py    # SQLite / internal API connector adapters
 |   |-- feishu_connector.py       # Feishu/Lark webhook delivery
+|   |-- feishu_inbound.py         # Feishu/Lark event parsing and idempotency
 |   |-- pipeline.py               # DAG pipeline execution
 |   |-- tools.py                  # Tool schemas and execution
 |   |-- workers.py                # Worker execution
@@ -508,7 +520,7 @@ Not included by default:
 - built-in RAG / vector database
 - enterprise auth / SSO
 - production-grade database adapters
-- inbound Feishu events, interactive cards, or two-way bot workflows
+- encrypted Feishu/Lark events, interactive cards, user permission mapping, or Jira/GitLab write adapters
 - packaged installer or one-click exe distribution
 
 ### Tests

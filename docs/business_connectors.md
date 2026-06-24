@@ -15,6 +15,7 @@
 | `database_query` | 查询业务数据 | `examples/demo_business.db` | 只允许 `SELECT/WITH`，禁止写入和管理语句，最多返回 50 行 |
 | `internal_api_request` | 请求内部 API | `examples/internal_api_demo.json` | 只允许 `GET` 和白名单路径，不让 Agent 构造任意 URL |
 | `feishu_send_message` | 发送飞书/飞书国际版群通知 | `.env` 中的 `FEISHU_WEBHOOK_URL` | 只能发到后端配置好的自定义机器人 webhook，Agent 不能传任意 webhook |
+| `/integrations/feishu/events` | 接收飞书开放平台事件并创建 Agent 任务 | 飞书事件订阅 | 校验 `FEISHU_EVENT_VERIFICATION_TOKEN`，按 event id 去重，只支持文本消息 |
 
 ### SQLite Demo
 
@@ -101,7 +102,42 @@ FEISHU_WEBHOOK_SECRET=replace-with-signing-secret
 }
 ```
 
-当前版本只支持文本消息。飞书文档、互动卡片、接收 @机器人消息属于方案二，需要接入飞书开放平台应用和事件订阅。
+自定义机器人方案只支持出站文本通知。如果需要接收群消息并自动回填结果，请使用下面的飞书开放平台双向事件订阅方案。
+
+### 飞书开放平台双向事件订阅
+
+当前版本已经支持第一版双向桥接：
+
+```text
+飞书群消息 -> /integrations/feishu/events -> Agent 任务 -> 回填原群聊
+```
+
+配置入口：
+
+```text
+POST https://<your-public-host>/integrations/feishu/events
+```
+
+后端会自动处理 URL verification challenge，并接收 `im.message.receive_v1` 文本事件。普通群消息默认创建 `manager_task`，显式 worker 前缀会创建指定 Worker 任务：
+
+```text
+/worker Alex 检查测试
+@Sophia review runtime/feishu_inbound.py
+Elena: 写项目日报
+```
+
+必要环境变量：
+
+```env
+FEISHU_EVENT_VERIFICATION_TOKEN=replace-with-event-token
+FEISHU_APP_ID=cli_xxx
+FEISHU_APP_SECRET=replace-with-app-secret
+FEISHU_DEFAULT_TASK_TYPE=manager_task
+FEISHU_DEFAULT_WORKER=Elena
+FEISHU_API_BASE_URL=https://open.feishu.cn/open-apis
+```
+
+完整流程见 [feishu_integration.md](feishu_integration.md)。
 
 ### 接真实公司系统
 
@@ -126,7 +162,7 @@ FEISHU_WEBHOOK_SECRET=replace-with-signing-secret
 
 可以这样讲：
 
-> 当前版本已经有最小业务连接器：一个只读 SQLite 数据库查询工具、一个内部 API 白名单请求工具，以及一个飞书自定义机器人通知工具。它们默认使用本地 demo 数据或本地 `.env` 配置，不依赖真实公司系统；生产里替换 adapter 和密钥来源即可接入飞书、工单、订单、客户系统或内部知识库。
+> 当前版本已经有最小业务连接器：一个只读 SQLite 数据库查询工具、一个内部 API 白名单请求工具，以及飞书自定义机器人通知和飞书开放平台双向事件订阅。它们默认使用本地 demo 数据或本地 `.env` 配置，不依赖真实公司系统；生产里替换 adapter、密钥来源和权限策略即可接入飞书、工单、订单、客户系统或内部知识库。
 
 ---
 
@@ -141,6 +177,7 @@ This document describes the minimal business connectors implemented in this repo
 | `database_query` | Query business data | `examples/demo_business.db` | SELECT/WITH only, no write/admin SQL, max 50 rows |
 | `internal_api_request` | Request internal API data | `examples/internal_api_demo.json` | GET-only allowlisted paths, no arbitrary URLs |
 | `feishu_send_message` | Send Feishu/Lark group notifications | `FEISHU_WEBHOOK_URL` in `.env` | Sends only to the backend-configured custom bot webhook; agents cannot provide arbitrary webhooks |
+| `/integrations/feishu/events` | Receive Feishu/Lark app events and create Agent tasks | Feishu event subscription | Verifies `FEISHU_EVENT_VERIFICATION_TOKEN`, deduplicates event ids, supports text messages only |
 
 ### SQLite Demo
 
@@ -210,7 +247,42 @@ Possible tool call:
 }
 ```
 
-This version supports text messages only. Feishu docs, interactive cards, or inbound @bot messages are phase-two work and require a Feishu Open Platform app plus event subscriptions.
+The custom bot path is outbound-only. Use the bidirectional Feishu/Lark app event flow below when inbound group messages and source-chat replies are needed.
+
+### Bidirectional Feishu/Lark App Events
+
+The workbench now includes the first bidirectional bridge:
+
+```text
+Feishu group message -> /integrations/feishu/events -> Agent task -> reply to the source chat
+```
+
+Use a Feishu/Lark Open Platform app when you need inbound messages. Configure an event subscription request URL pointing to:
+
+```text
+POST http(s)://<your-public-host>/integrations/feishu/events
+```
+
+The endpoint handles URL verification by returning the `challenge` value, then accepts `im.message.receive_v1` text events. Each event id is persisted in `feishu_events.json`, so retries from Feishu do not create duplicate Agent tasks.
+
+Required app settings:
+
+```env
+FEISHU_EVENT_VERIFICATION_TOKEN=replace-with-event-token
+FEISHU_APP_ID=cli_xxx
+FEISHU_APP_SECRET=replace-with-app-secret
+FEISHU_DEFAULT_TASK_TYPE=manager_task
+FEISHU_DEFAULT_WORKER=Elena
+```
+
+If `FEISHU_APP_ID` and `FEISHU_APP_SECRET` are configured, task completion replies are sent back to the original `chat_id` through the app message API. If app credentials are not configured, the workbench falls back to `FEISHU_WEBHOOK_URL`, which can still notify a fixed group but cannot reply to the source chat.
+
+Current boundary:
+
+- Supported: URL verification, token validation, unencrypted text message events, event idempotency, task-result replies.
+- Not yet supported: encrypted event payloads via `FEISHU_EVENT_ENCRYPT_KEY`, interactive cards, document events, native Feishu slash commands, or user identity permission mapping.
+
+See [feishu_integration.md](feishu_integration.md) for the full setup flow.
 
 ### Production Integration
 

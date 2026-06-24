@@ -876,7 +876,7 @@ class TestFlashRemovedFromRouting(unittest.TestCase):
             task, "Alex", previous_failures=2
         )
         self.assertEqual(complexity, "complex")
-        self.assertIn(provider, ("gpt", "dashscope"))
+        self.assertIn(provider, ("gpt", "dashscope", "deepseek"))
 
     def test_fallback_never_flash(self):
         """FALLBACK 不使用 flash。"""

@@ -137,7 +137,7 @@ class TestInputValidation(unittest.TestCase):
 
     def test_all_valid_types_accepted(self):
         for t in VALID_TASK_TYPES:
-            if t == "project_pipeline_task":
+            if t in {"manager_task", "project_pipeline_task"}:
                 validate_create_task(t, "desc", None, self.workers)
             else:
                 validate_create_task(t, "desc", "Alex", self.workers)
@@ -169,6 +169,16 @@ class TestTaskAPI(unittest.TestCase):
             "structured_result": {"status": "success", "summary": "模拟结果", "artifacts": []},
         }
 
+        cls._run_manager_patcher = patch("manager.run_manager_task")
+        cls.mock_run_manager = cls._run_manager_patcher.start()
+        cls.mock_run_manager.return_value = {
+            "log": ["[test] manager delegated"],
+            "result": "Manager 已处理",
+            "messages": [],
+            "model_used": "[gpt]gpt-5.4",
+            "tool_calls": [],
+        }
+
         cls._verified_patcher = patch("runtime.verification.delegate_with_verification")
         cls.mock_verified = cls._verified_patcher.start()
         cls.mock_verified.return_value = {"status": "done", "verdict": "pass"}
@@ -193,6 +203,7 @@ class TestTaskAPI(unittest.TestCase):
         if cls._executor:
             cls._executor.shutdown(wait=True)
         cls._run_worker_patcher.stop()
+        cls._run_manager_patcher.stop()
         cls._verified_patcher.stop()
         cls._proj_setup_patcher.stop()
         cls._pipeline_patcher.stop()
@@ -229,6 +240,133 @@ class TestTaskAPI(unittest.TestCase):
         self.assertTrue(data["ok"])
         self.assertIn("task_", data["task_id"])
         self.assertIn(data["status"], ("pending", "running", "completed"))
+
+    def test_create_manager_task_returns_task_id_without_worker(self):
+        resp = client.post("/agent/tasks", json={
+            "type": "manager_task",
+            "description": "decide who should inspect this",
+        })
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()
+        self.assertTrue(data["ok"])
+        task = TaskStore.get(data["task_id"])
+        self.assertIsNotNone(task)
+        self.assertEqual(task.type, "manager_task")
+        self.assertIsNone(task.worker_name)
+
+    def test_feishu_event_challenge_returns_challenge(self):
+        with patch.dict(os.environ, {"FEISHU_EVENT_VERIFICATION_TOKEN": "verify-token"}, clear=False):
+            resp = client.post("/integrations/feishu/events", json={
+                "type": "url_verification",
+                "token": "verify-token",
+                "challenge": "abc123",
+            })
+
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertEqual(resp.json(), {"challenge": "abc123"})
+
+    def test_feishu_event_rejects_bad_token(self):
+        with patch.dict(os.environ, {"FEISHU_EVENT_VERIFICATION_TOKEN": "verify-token"}, clear=False):
+            resp = client.post("/integrations/feishu/events", json={
+                "type": "url_verification",
+                "token": "bad-token",
+                "challenge": "abc123",
+            })
+
+        self.assertEqual(resp.status_code, 403, resp.text)
+
+    def test_feishu_event_requires_configured_token(self):
+        with patch.dict(os.environ, {"FEISHU_EVENT_VERIFICATION_TOKEN": ""}, clear=False):
+            resp = client.post("/integrations/feishu/events", json={
+                "schema": "2.0",
+                "header": {
+                    "event_id": "evt_missing_token",
+                    "event_type": "im.message.receive_v1",
+                    "token": "anything",
+                },
+                "event": {
+                    "message": {
+                        "message_id": "om_missing_token",
+                        "chat_id": "oc_missing_token",
+                        "message_type": "text",
+                        "content": json.dumps({"text": "hello"}, ensure_ascii=False),
+                    },
+                },
+            })
+
+        self.assertEqual(resp.status_code, 503, resp.text)
+
+    def test_feishu_message_event_creates_task_and_is_idempotent(self):
+        event_id = f"evt_api_001_{_generate_task_id()}"
+        payload = {
+            "schema": "2.0",
+            "header": {
+                "event_id": event_id,
+                "event_type": "im.message.receive_v1",
+                "token": "verify-token",
+            },
+            "event": {
+                "sender": {"sender_id": {"open_id": "ou_1"}},
+                "message": {
+                    "message_id": f"om_{event_id}",
+                    "chat_id": "oc_api_001",
+                    "message_type": "text",
+                    "content": json.dumps({"text": "请生成今天项目日报"}, ensure_ascii=False),
+                },
+            },
+        }
+        with patch.dict(os.environ, {"FEISHU_EVENT_VERIFICATION_TOKEN": "verify-token"}, clear=False):
+            resp1 = client.post("/integrations/feishu/events", json=payload)
+            resp2 = client.post("/integrations/feishu/events", json=payload)
+
+        self.assertEqual(resp1.status_code, 200, resp1.text)
+        self.assertEqual(resp2.status_code, 200, resp2.text)
+        data1 = resp1.json()
+        data2 = resp2.json()
+        self.assertTrue(data1["ok"])
+        self.assertEqual(data1["task_type"], "manager_task")
+        self.assertEqual(data1["task_id"], data2["task_id"])
+        self.assertTrue(data2["duplicate"])
+
+        task = TaskStore.get(data1["task_id"])
+        self.assertIsNotNone(task)
+        self.assertEqual(task.type, "manager_task")
+        self.assertIsNone(task.worker_name)
+        self.assertIn("请生成今天项目日报", task.description)
+
+    def test_feishu_message_event_can_select_worker(self):
+        event_id = f"evt_api_worker_select_{_generate_task_id()}"
+        payload = {
+            "schema": "2.0",
+            "header": {
+                "event_id": event_id,
+                "event_type": "im.message.receive_v1",
+                "token": "verify-token",
+            },
+            "event": {
+                "sender": {"sender_id": {"open_id": "ou_1"}},
+                "message": {
+                    "message_id": f"om_{event_id}",
+                    "chat_id": "oc_api_worker_select",
+                    "message_type": "text",
+                    "content": json.dumps({"text": "/worker Alex fix the routing bug"}, ensure_ascii=False),
+                },
+            },
+        }
+        with patch.dict(os.environ, {"FEISHU_EVENT_VERIFICATION_TOKEN": "verify-token"}, clear=False):
+            resp = client.post("/integrations/feishu/events", json=payload)
+
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()
+        self.assertEqual(data["task_type"], "worker_task")
+        self.assertEqual(data["worker_name"], "Alex")
+        self.assertEqual(data["worker_selection"], "slash_command")
+
+        task = TaskStore.get(data["task_id"])
+        self.assertIsNotNone(task)
+        self.assertEqual(task.worker_name, "Alex")
+        self.assertIn("fix the routing bug", task.description)
+        self.assertNotIn("/worker Alex", task.description)
 
     def test_create_verified_task_returns_task_id(self):
         resp = client.post("/agent/tasks", json={

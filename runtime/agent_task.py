@@ -17,7 +17,7 @@ from typing import Optional, Callable
 
 # ── 任务数据模型 ──
 
-VALID_TASK_TYPES = {"worker_task", "verified_task", "project_pipeline_task"}
+VALID_TASK_TYPES = {"manager_task", "worker_task", "verified_task", "project_pipeline_task"}
 VALID_TASK_STATUSES = {"pending", "running", "completed", "failed", "cancelled"}
 
 
@@ -25,7 +25,7 @@ VALID_TASK_STATUSES = {"pending", "running", "completed", "failed", "cancelled"}
 class AgentTask:
     """标准任务记录。JSON 可序列化，无需数据库。"""
     task_id: str
-    type: str                        # worker_task | verified_task | project_pipeline_task
+    type: str                        # manager_task | worker_task | verified_task | project_pipeline_task
     status: str = "pending"          # pending | running | completed | failed | cancelled
     description: str = ""
     worker_name: Optional[str] = None
@@ -234,7 +234,7 @@ def validate_create_task(
             raise TaskValidationError(
                 f"未知 Worker: '{worker_name}'。可用: {available}"
             )
-    if task_type == "project_pipeline_task" and worker_name and worker_name not in workers:
+    if task_type in ("manager_task", "project_pipeline_task") and worker_name and worker_name not in workers:
         available = ", ".join(workers.keys())
         raise TaskValidationError(
             f"未知 Worker: '{worker_name}'。可用: {available}"
@@ -298,7 +298,9 @@ class TaskExecutor:
         self._notify(task)
 
         try:
-            if task.type == "worker_task":
+            if task.type == "manager_task":
+                self._run_manager_task(task)
+            elif task.type == "worker_task":
                 self._run_worker_task(task)
             elif task.type == "verified_task":
                 self._run_verified_task(task)
@@ -312,6 +314,42 @@ class TaskExecutor:
             self._append_log(task, traceback.format_exc())
             TaskStore.save(task)
             self._notify(task)
+
+    def _run_manager_task(self, task: AgentTask):
+        """执行 manager_task 类型，让 Manager 决策是否派发给 Worker。"""
+        from manager import run_manager_task
+
+        task.progress = "Manager 调度中..."
+        TaskStore.save(task)
+        self._notify(task)
+
+        try:
+            result = run_manager_task(self.workers, task.description)
+        except Exception as e:
+            task.status = "failed"
+            task.error = f"{type(e).__name__}: {e}"
+            task.progress = "Manager 执行异常"
+            self._append_log(task, f"执行异常: {e}")
+            TaskStore.save(task)
+            self._notify(task)
+            return
+
+        if task.cancel_requested:
+            task.status = "cancelled"
+            task.progress = "已取消"
+            self._append_log(task, "任务在运行中被取消")
+            TaskStore.save(task)
+            self._notify(task)
+            return
+
+        task.result = result.get("result", "")
+        task.artifacts = [{"type": "manager_tool", **item} for item in result.get("tool_calls", [])]
+        task.status = "completed"
+        task.progress = "完成"
+        task.logs.extend(result.get("log", []))
+        self._append_log(task, f"完成: {task.result[:200] if task.result else '(无输出)'}")
+        TaskStore.save(task)
+        self._notify(task)
 
     def _run_worker_task(self, task: AgentTask):
         """执行 worker_task 类型。"""

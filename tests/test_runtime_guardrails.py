@@ -3,6 +3,7 @@ import json
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -11,7 +12,21 @@ os.environ.setdefault("ANTHROPIC_API_KEY", "test-dummy-key")
 import manager
 from manager import execute_tool, select_worker_model, select_manager_model
 from runtime.business_connectors import database_query, ensure_demo_business_db, internal_api_request
-from runtime.feishu_connector import build_feishu_text_payload, send_feishu_message
+from runtime.feishu_connector import (
+    build_feishu_text_payload,
+    get_tenant_access_token,
+    send_feishu_app_message,
+    send_feishu_message,
+)
+from runtime.feishu_inbound import (
+    build_task_description,
+    challenge_response,
+    is_url_verification,
+    parse_inbound_message,
+    select_worker_for_text,
+    task_reply_text,
+    verify_event_token,
+)
 
 
 class _FakeHTTPResponse:
@@ -76,6 +91,31 @@ class TestRuntimeGuardrails(unittest.TestCase):
         self.assertFalse(needs_confirm)
         self.assertNotEqual(manager_model, "gpt-5.5")
         self.assertNotIn("重大决策", reason)
+
+    def test_model_routing_uses_configured_gpt_when_deepseek_is_absent(self):
+        old_providers = dict(manager.PROVIDERS)
+        try:
+            manager.PROVIDERS.clear()
+            manager.PROVIDERS["gpt"] = {"type": "openai"}
+
+            (provider, model_id), _, _ = select_worker_model("hello from feishu", "Elena")
+            (verifier_provider, _), _, _ = select_worker_model(
+                "verify feishu task",
+                "Sophia",
+                is_verifier=True,
+            )
+            (retry_provider, _), _, _ = select_worker_model(
+                "retry failed feishu task",
+                "Alex",
+                previous_failures=2,
+            )
+
+            self.assertEqual((provider, model_id), ("gpt", "gpt-5.4"))
+            self.assertEqual(verifier_provider, "gpt")
+            self.assertEqual(retry_provider, "gpt")
+        finally:
+            manager.PROVIDERS.clear()
+            manager.PROVIDERS.update(old_providers)
 
     def test_repeated_tool_call_forces_runtime_stop(self):
         messages = [{"role": "user", "content": "fetch once"}]
@@ -347,6 +387,113 @@ class TestRuntimeGuardrails(unittest.TestCase):
         self.assertEqual(payload["status"], "success")
         self.assertTrue(payload["delivery"]["ok"])
         self.assertIn("飞书发送：成功", payload["summary"])
+
+
+class TestFeishuBidirectional(unittest.TestCase):
+    def test_feishu_task_reply_text_is_clean_for_chat(self):
+        completed = SimpleNamespace(
+            status="completed",
+            task_id="task_20260624_232952_084485",
+            result=json.dumps({"summary": "clean reply"}, ensure_ascii=False),
+            error="",
+            progress="",
+        )
+        failed = SimpleNamespace(
+            status="failed",
+            task_id="task_20260624_232952_084485",
+            result="",
+            error="model failed",
+            progress="",
+        )
+
+        completed_text = task_reply_text(completed)
+        failed_text = task_reply_text(failed)
+
+        self.assertEqual(completed_text, "clean reply")
+        for text in (completed_text, failed_text):
+            self.assertNotIn("Agent Task Result", text)
+            self.assertNotIn("task_20260624_232952_084485", text)
+            self.assertNotIn("\u4efb\u52a1ID", text)
+            self.assertNotIn("\u4efb\u52a1\u5df2\u5b8c\u6210", text)
+
+    def test_feishu_worker_selection_from_message_prefix(self):
+        workers = {"Alex": {}, "Sophia": {}, "Elena": {}}
+
+        slash = select_worker_for_text("/worker Alex fix the failing test", workers, "Elena")
+        mention = select_worker_for_text("@Sophia review this diff", workers, "Elena")
+        default = select_worker_for_text("summarize today's progress", workers, "Elena")
+
+        self.assertEqual((slash.worker_name, slash.task_text, slash.source), ("Alex", "fix the failing test", "slash_command"))
+        self.assertEqual((mention.worker_name, mention.task_text, mention.source), ("Sophia", "review this diff", "worker_prefix"))
+        self.assertEqual((default.worker_name, default.source), ("Elena", "default"))
+
+    def test_feishu_event_url_verification(self):
+        payload = {
+            "type": "url_verification",
+            "token": "verify-token",
+            "challenge": "challenge-value",
+        }
+
+        self.assertTrue(is_url_verification(payload))
+        self.assertTrue(verify_event_token(payload, "verify-token"))
+        self.assertEqual(challenge_response(payload), {"challenge": "challenge-value"})
+
+    def test_feishu_inbound_message_parsing(self):
+        payload = {
+            "schema": "2.0",
+            "header": {
+                "event_id": "evt_001",
+                "event_type": "im.message.receive_v1",
+                "token": "verify-token",
+            },
+            "event": {
+                "sender": {"sender_id": {"open_id": "ou_1"}},
+                "message": {
+                    "message_id": "om_1",
+                    "chat_id": "oc_1",
+                    "message_type": "text",
+                    "content": json.dumps({"text": "请总结今天的项目进展"}, ensure_ascii=False),
+                },
+            },
+        }
+
+        message = parse_inbound_message(payload)
+
+        self.assertEqual(message.event_id, "evt_001")
+        self.assertEqual(message.chat_id, "oc_1")
+        self.assertEqual(message.message_id, "om_1")
+        self.assertEqual(message.text, "请总结今天的项目进展")
+        self.assertIn("请总结今天的项目进展", build_task_description(message))
+
+    def test_feishu_app_message_uses_chat_id(self):
+        captured = {}
+
+        def fake_urlopen(req, timeout=10):
+            captured.setdefault("urls", []).append(req.full_url)
+            body = req.data.decode("utf-8")
+            captured.setdefault("bodies", []).append(body)
+            if req.full_url.endswith("/auth/v3/tenant_access_token/internal"):
+                return _FakeHTTPResponse('{"code":0,"tenant_access_token":"tenant-token"}')
+            return _FakeHTTPResponse('{"code":0,"data":{"message_id":"om_reply"}}')
+
+        with patch.dict(
+            os.environ,
+            {
+                "FEISHU_APP_ID": "cli_test",
+                "FEISHU_APP_SECRET": "secret",
+                "FEISHU_API_BASE_URL": "https://open.feishu.cn/open-apis",
+            },
+            clear=False,
+        ):
+            with patch("runtime.feishu_connector.urllib.request.urlopen", side_effect=fake_urlopen):
+                token = get_tenant_access_token()
+                result = send_feishu_app_message("oc_1", "任务完成", title="Agent", token=token)
+
+        self.assertEqual(token, "tenant-token")
+        self.assertTrue(result["ok"])
+        self.assertIn("receive_id_type=chat_id", captured["urls"][-1])
+        self.assertIn('"receive_id": "oc_1"', captured["bodies"][-1])
+        self.assertIn("任务完成", captured["bodies"][-1])
 
 
 if __name__ == "__main__":
