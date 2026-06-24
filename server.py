@@ -21,6 +21,7 @@ from runtime.feishu_inbound import (
     build_task_description,
     challenge_response,
     get_event_record,
+    get_chat_context,
     get_task_id_for_event,
     get_task_link,
     inbound_status,
@@ -29,6 +30,7 @@ from runtime.feishu_inbound import (
     mark_task_reply,
     parse_inbound_message,
     select_worker_for_text,
+    summarize_today_tasks,
     task_reply_text,
     verify_event_token,
 )
@@ -946,10 +948,18 @@ async def receive_feishu_event(request: Request):
     selection = select_worker_for_text(message.text, workers, FEISHU_DEFAULT_WORKER)
     task_type = "worker_task" if selection.source != "default" else FEISHU_DEFAULT_TASK_TYPE
     worker_name = selection.worker_name if task_type in {"worker_task", "verified_task"} else None
+    chat_context = get_chat_context(message.chat_id)
+    today_tasks = summarize_today_tasks(TaskStore.list_all())
 
     task = _create_agent_task_record(
         task_type,
-        build_task_description(message, selection.task_text, worker_name),
+        build_task_description(
+            message,
+            selection.task_text,
+            worker_name,
+            chat_context=chat_context,
+            today_tasks=today_tasks,
+        ),
         worker_name,
         submit=False,
     )

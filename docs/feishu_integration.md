@@ -18,6 +18,8 @@
 - `im.message.receive_v1` 文本消息会创建 Agent 任务。
 - 普通消息默认走 `manager_task`，由 Manager 调度。
 - `/worker Alex ...`、`@Sophia ...`、`Elena: ...` 这类显式前缀会创建指定 Worker 任务。
+- 同一个 `chat_id` 的最近飞书消息会作为上下文注入新任务，便于回答“结合上面”“刚才说的”等问题。
+- 新任务会附带当天 Agent 任务摘要，便于回答“今天做了什么”“发一份今日进展”等问题。
 - 事件按 `event_id` 去重，飞书重试不会重复创建任务。
 - 任务完成、失败或取消后，会把干净的结果正文回填到原 `chat_id`。
 
@@ -168,6 +170,8 @@ curl http://127.0.0.1:8000/integrations/feishu/status
 - `default_task_type`: 普通消息默认任务类型，当前推荐 `manager_task`。
 - `app_reply_configured`: 是否配置了 App ID 和 App Secret，可回填原群聊。
 - `webhook_reply_configured`: 是否配置了自定义机器人 webhook，可作为固定群通知兜底。
+- `inbound.chat_history_chats`: 当前本地已记录上下文的飞书会话数量。
+- `inbound.chat_history_messages`: 当前本地已记录的飞书上下文消息数量。
 
 如果只想验证 challenge 逻辑，可以向本地服务发送一个模拟请求：
 
@@ -200,15 +204,24 @@ python -m pytest -q
 - challenge 响应。
 - token 校验。
 - 文本消息解析。
+- 同一 `chat_id` 的上文注入。
+- 当天 Agent 任务摘要注入。
 - Worker 前缀选择。
 - app message 发送到 `chat_id`。
 - 回填消息不再带 `[Agent Task Result]`、`任务ID` 等调试外壳。
 
-### 10. 生产边界
+### 10. 上下文边界
+
+飞书事件处理会把最近收到的同群聊文本事件保存在本地 `feishu_events.json` 的 `chat_history` 中；该文件已被 `.gitignore` 忽略，不会提交到仓库。创建新 Agent 任务时，后端会读取同一个 `chat_id` 的最近若干条消息，并附加当天 `agent_tasks.json` 中的任务摘要。
+
+这不是“读取完整飞书群历史”。只有飞书实际投递到 `/integrations/feishu/events` 的文本事件才会进入上下文。如果机器人没有收到普通群消息事件，或者应用权限/事件订阅没有覆盖某些消息，后端就无法知道那些“上面的聊天”。如需补齐历史消息，需要额外申请飞书消息历史相关权限，并接入主动拉取消息历史的 API。
+
+### 11. 生产边界
 
 当前实现适合内部测试和 demo。上线前建议补齐：
 
 - `FEISHU_EVENT_ENCRYPT_KEY` 加密事件解密。
+- 主动拉取飞书消息历史，用于机器人未在线或 webhook 未收到事件时补上下文。
 - 更细的用户、群、租户白名单。
 - 机器人回复频控和失败重试策略。
 - 互动卡片和长结果分页。
@@ -232,6 +245,8 @@ Implemented behavior:
 - `im.message.receive_v1` text events create Agent tasks.
 - Normal messages default to `manager_task`.
 - Explicit prefixes such as `/worker Alex ...`, `@Sophia ...`, or `Elena: ...` create Worker tasks.
+- Recent messages from the same `chat_id` are injected into new tasks as Feishu chat context.
+- New tasks include a same-day Agent task summary for requests such as "what did we do today?"
 - Event ids are persisted and deduplicated.
 - Finished tasks reply to the original `chat_id` with clean task output.
 
@@ -292,12 +307,19 @@ python -m pytest -q
 Expected test result:
 
 ```text
-245 passed
+247 passed
 ```
+
+### Context Boundary
+
+The inbound handler stores recent received text events per `chat_id` in local `feishu_events.json`; this file is ignored by git. When a new Agent task is created, the backend injects recent messages from the same chat plus a same-day summary from `agent_tasks.json`.
+
+This is not full Feishu group-history access. The backend can only remember messages that Feishu actually delivered to `/integrations/feishu/events`. If the app is not subscribed to ordinary group-message events, lacks permission, or was offline before a message arrived, that message will not be available as context. Full history recovery requires additional Feishu message-history permissions and an API fetch path.
 
 ### Current Limits
 
 - Text messages only.
 - Unencrypted event payloads only.
+- Context is event-backed only; full group-history fetching is not implemented yet.
 - No interactive cards or user permission mapping yet.
 - App credentials are required for replies to the source chat; the custom bot webhook is only a fixed-group fallback.

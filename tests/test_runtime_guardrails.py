@@ -23,6 +23,7 @@ from runtime.feishu_inbound import (
     challenge_response,
     is_url_verification,
     parse_inbound_message,
+    summarize_today_tasks,
     select_worker_for_text,
     task_reply_text,
     verify_event_token,
@@ -464,6 +465,58 @@ class TestFeishuBidirectional(unittest.TestCase):
         self.assertEqual(message.message_id, "om_1")
         self.assertEqual(message.text, "请总结今天的项目进展")
         self.assertIn("请总结今天的项目进展", build_task_description(message))
+
+    def test_feishu_task_description_includes_chat_context_and_today_work(self):
+        message = parse_inbound_message({
+            "schema": "2.0",
+            "header": {
+                "event_id": "evt_context_002",
+                "event_type": "im.message.receive_v1",
+                "token": "verify-token",
+            },
+            "event": {
+                "sender": {"sender_id": {"open_id": "ou_2"}},
+                "message": {
+                    "message_id": "om_context_002",
+                    "chat_id": "oc_context",
+                    "message_type": "text",
+                    "content": json.dumps({"text": "总结今天干了什么"}, ensure_ascii=False),
+                },
+            },
+        })
+        today_tasks = summarize_today_tasks(
+            [
+                SimpleNamespace(
+                    task_id="task_today_context",
+                    type="manager_task",
+                    status="completed",
+                    description="接入飞书双向消息并修复回填格式",
+                    worker_name=None,
+                    result=json.dumps({"summary": "完成飞书双向接入、Manager 默认流和干净回填"}, ensure_ascii=False),
+                    error="",
+                    created_at="2026-06-25 09:00:00",
+                    updated_at="2026-06-25 10:00:00",
+                )
+            ],
+            today="2026-06-25",
+        )
+
+        description = build_task_description(
+            message,
+            chat_context=[
+                {
+                    "received_at": "2026-06-25 09:30:00",
+                    "sender_id": "ou_1",
+                    "text": "我们已经完成了飞书事件订阅和 GitHub 同步",
+                }
+            ],
+            today_tasks=today_tasks,
+        )
+
+        self.assertIn("近期飞书群聊上下文", description)
+        self.assertIn("我们已经完成了飞书事件订阅和 GitHub 同步", description)
+        self.assertIn("今日 Agent 任务摘要", description)
+        self.assertIn("完成飞书双向接入", description)
 
     def test_feishu_app_message_uses_chat_id(self):
         captured = {}

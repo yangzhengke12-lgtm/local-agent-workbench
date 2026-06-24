@@ -334,8 +334,51 @@ class TestTaskAPI(unittest.TestCase):
         self.assertIsNone(task.worker_name)
         self.assertIn("请生成今天项目日报", task.description)
 
+    def test_feishu_message_event_includes_prior_chat_context(self):
+        first_event_id = f"evt_api_context_1_{_generate_task_id()}"
+        second_event_id = f"evt_api_context_2_{_generate_task_id()}"
+        chat_id = f"oc_api_context_{_generate_task_id()}"
+
+        def payload(event_id, message_id, text):
+            return {
+                "schema": "2.0",
+                "header": {
+                    "event_id": event_id,
+                    "event_type": "im.message.receive_v1",
+                    "token": "verify-token",
+                },
+                "event": {
+                    "sender": {"sender_id": {"open_id": "ou_context"}},
+                    "message": {
+                        "message_id": message_id,
+                        "chat_id": chat_id,
+                        "message_type": "text",
+                        "content": json.dumps({"text": text}, ensure_ascii=False),
+                    },
+                },
+            }
+
+        with patch.dict(os.environ, {"FEISHU_EVENT_VERIFICATION_TOKEN": "verify-token"}, clear=False):
+            resp1 = client.post(
+                "/integrations/feishu/events",
+                json=payload(first_event_id, f"om_{first_event_id}", "我们刚完成了飞书双向接入"),
+            )
+            resp2 = client.post(
+                "/integrations/feishu/events",
+                json=payload(second_event_id, f"om_{second_event_id}", "结合上面的话，总结今天干了什么"),
+            )
+
+        self.assertEqual(resp1.status_code, 200, resp1.text)
+        self.assertEqual(resp2.status_code, 200, resp2.text)
+        task = TaskStore.get(resp2.json()["task_id"])
+        self.assertIsNotNone(task)
+        self.assertIn("结合上面的话，总结今天干了什么", task.description)
+        self.assertIn("近期飞书群聊上下文", task.description)
+        self.assertIn("我们刚完成了飞书双向接入", task.description)
+
     def test_feishu_message_event_can_select_worker(self):
         event_id = f"evt_api_worker_select_{_generate_task_id()}"
+        chat_id = f"oc_api_worker_select_{_generate_task_id()}"
         payload = {
             "schema": "2.0",
             "header": {
@@ -347,7 +390,7 @@ class TestTaskAPI(unittest.TestCase):
                 "sender": {"sender_id": {"open_id": "ou_1"}},
                 "message": {
                     "message_id": f"om_{event_id}",
-                    "chat_id": "oc_api_worker_select",
+                    "chat_id": chat_id,
                     "message_type": "text",
                     "content": json.dumps({"text": "/worker Alex fix the routing bug"}, ensure_ascii=False),
                 },
