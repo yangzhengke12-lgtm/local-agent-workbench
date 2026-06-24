@@ -419,6 +419,34 @@ class TestFeishuBidirectional(unittest.TestCase):
             self.assertNotIn("\u4efb\u52a1ID", text)
             self.assertNotIn("\u4efb\u52a1\u5df2\u5b8c\u6210", text)
 
+    def test_feishu_task_reply_text_does_not_leak_manager_tool_calls(self):
+        task = SimpleNamespace(
+            status="completed",
+            result=json.dumps(
+                {
+                    "status": "completed",
+                    "tool_calls": [
+                        {
+                            "name": "get_system_metadata",
+                            "input": {},
+                            "result_preview": "{\"app\":\"Multi-Agent 层级管理系统\"}",
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            error="",
+            progress="",
+        )
+
+        text = task_reply_text(task)
+
+        self.assertIn("处理完成", text)
+        self.assertNotIn("tool_calls", text)
+        self.assertNotIn("result_preview", text)
+        self.assertNotIn("get_system_metadata", text)
+        self.assertNotIn("Multi-Agent 层级管理系统", text)
+
     def test_feishu_worker_selection_from_message_prefix(self):
         workers = {"Alex": {}, "Sophia": {}, "Elena": {}}
 

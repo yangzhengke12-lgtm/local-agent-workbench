@@ -388,7 +388,13 @@ def _task_result_summary(result: Any) -> str:
     except json.JSONDecodeError:
         return _shorten(raw, MAX_TASK_SUMMARY_CHARS)
     if isinstance(parsed, dict):
-        return _shorten(parsed.get("summary") or parsed.get("result") or raw, MAX_TASK_SUMMARY_CHARS)
+        public_summary = parsed.get("summary") or parsed.get("result")
+        if public_summary:
+            return _shorten(public_summary, MAX_TASK_SUMMARY_CHARS)
+        tool_calls = parsed.get("tool_calls")
+        if isinstance(tool_calls, list):
+            return f"处理完成，执行了 {len(tool_calls)} 个工具调用，但未生成最终摘要。"
+        return _shorten(parsed.get("status") or "处理完成。", MAX_TASK_SUMMARY_CHARS)
     return _shorten(raw, MAX_TASK_SUMMARY_CHARS)
 
 
@@ -505,14 +511,7 @@ def task_reply_text(task: Any) -> str:
     status = getattr(task, "status", "")
     if status == "completed":
         result = getattr(task, "result", "") or ""
-        summary = result
-        try:
-            parsed = json.loads(result)
-            if isinstance(parsed, dict):
-                summary = parsed.get("summary") or parsed.get("result") or result
-        except json.JSONDecodeError:
-            pass
-        return (str(summary).strip() or "处理完成。")[:MAX_TASK_REPLY_CHARS]
+        return (_task_result_summary(result) or "处理完成。")[:MAX_TASK_REPLY_CHARS]
 
     error = getattr(task, "error", "") or getattr(task, "progress", "") or "任务未成功完成"
     prefix = "已取消" if status == "cancelled" else "处理失败"
