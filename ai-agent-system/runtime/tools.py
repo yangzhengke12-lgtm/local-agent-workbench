@@ -19,6 +19,9 @@ import urllib.error
 import urllib.request
 from datetime import datetime
 
+from runtime.business_connectors import database_query, internal_api_request
+from runtime.feishu_connector import send_feishu_message
+
 from runtime.persistence import (
     _workers_config,
     _load_json,
@@ -357,6 +360,95 @@ ALL_TOOLS = {
             "required": ["pattern"],
         },
     },
+    "git_inspect": {
+        "name": "git_inspect",
+        "description": (
+            "Inspect the current Git repository in read-only mode. "
+            "Can return git status, diff summary, recent commits, a scoped diff, or a one-call report bundle for documentation and reporting tasks."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "mode": {
+                    "type": "string",
+                    "enum": ["status", "diff", "diff_stat", "log", "report"],
+                    "description": "Type of Git inspection to run.",
+                },
+                "pathspec": {
+                    "type": "string",
+                    "description": "Optional file or directory scope, such as README.md or docs/.",
+                },
+                "pathspecs": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional list of file or directory scopes, such as [\"README.md\", \"docs/\"]",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max number of commits for log mode, default 5, max 20.",
+                },
+            },
+            "required": ["mode"],
+        },
+    },
+    "database_query": {
+        "name": "database_query",
+        "description": (
+            "查询本地 demo 业务 SQLite 数据库。只允许 SELECT/WITH 只读查询，"
+            "用于演示订单、客户、工单等业务数据接入。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "只读 SQL，例如 SELECT * FROM tickets WHERE status = 'open'",
+                },
+                "max_rows": {
+                    "type": "integer",
+                    "description": "最多返回行数，默认 20，最大 50",
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    "internal_api_request": {
+        "name": "internal_api_request",
+        "description": (
+            "调用受控的公司内部 API demo。只允许 GET 白名单路径，例如 "
+            "/tickets/ticket_9001、/orders/ord_1001、/customers/cust_001、/metrics/daily。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "白名单 API 路径"},
+                "params": {"type": "object", "description": "可选 query 参数"},
+            },
+            "required": ["path"],
+        },
+    },
+    "feishu_send_message": {
+        "name": "feishu_send_message",
+        "description": (
+            "Send a text message to the configured Feishu/Lark custom bot webhook. "
+            "Use it to push agent task results, reports, or alerts into a Feishu group. "
+            "The webhook URL is read from FEISHU_WEBHOOK_URL and cannot be provided by the agent."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "text": {
+                    "type": "string",
+                    "description": "Message body to send to the Feishu group.",
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Optional short title prepended to the message.",
+                },
+            },
+            "required": ["text"],
+        },
+    },
 }
 
 
@@ -484,6 +576,72 @@ def execute_tool(name: str, args: dict) -> str:
         except Exception as e:
             return f"文档转换失败: {e}"
 
+    if name == "git_inspect":
+        mode = args["mode"]
+        pathspec = args.get("pathspec", "").strip()
+        raw_pathspecs = args.get("pathspecs") or []
+        pathspecs = [p.strip() for p in raw_pathspecs if isinstance(p, str) and p.strip()]
+        if pathspec and not pathspecs:
+            pathspecs = pathspec.split()
+        limit = args.get("limit", 5)
+        try:
+            limit = max(1, min(int(limit), 20))
+        except (TypeError, ValueError):
+            limit = 5
+
+        scope_args = ["--", *pathspecs] if pathspecs else []
+        commands = {
+            "status": ["git", "status", "--short"],
+            "diff": ["git", "diff", *scope_args] if scope_args else ["git", "diff"],
+            "diff_stat": ["git", "diff", "--stat", *scope_args] if scope_args else ["git", "diff", "--stat"],
+            "log": ["git", "log", f"-n{limit}", "--oneline"],
+        }
+        if mode == "report":
+            docs_scope = pathspecs or ["README.md", "agent_api.md", "docs/", "examples/"]
+            sections = []
+            report_commands = [
+                ("git status", ["git", "status", "--short"]),
+                ("git diff --stat", ["git", "diff", "--stat"]),
+                ("recent commits", ["git", "log", f"-n{limit}", "--oneline"]),
+                ("docs diff", ["git", "diff", "--", *docs_scope]),
+            ]
+            for title, cmd in report_commands:
+                try:
+                    result = subprocess.run(
+                        cmd,
+                        capture_output=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        timeout=15,
+                        cwd=os.getcwd(),
+                    )
+                except Exception as e:
+                    return f"git_inspect 执行失败: {e}"
+                output = (result.stdout or "").strip() or (result.stderr or "").strip() or "(无输出)"
+                if result.returncode != 0:
+                    output = f"失败: {output or f'退出码 {result.returncode}'}"
+                sections.append(f"[{title}]\n{output}")
+            return truncate("\n\n".join(sections), 12000)
+
+        cmd = commands.get(mode)
+        if not cmd:
+            return f"不支持的 git_inspect mode: {mode}"
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=15,
+                cwd=os.getcwd(),
+            )
+        except Exception as e:
+            return f"git_inspect 执行失败: {e}"
+        output = (result.stdout or "").strip() or (result.stderr or "").strip()
+        if result.returncode != 0:
+            return f"git_inspect 失败: {output or f'退出码 {result.returncode}'}"
+        return truncate(output or "(无输出)", 10000)
+
     if name == "github_create_pr":
         title = args["title"]
         body = args["body"]
@@ -528,6 +686,36 @@ def execute_tool(name: str, args: dict) -> str:
 
     if name == "search_knowledge":
         return search_knowledge(args["query"])
+
+    if name == "database_query":
+        try:
+            return json.dumps(
+                database_query(args["query"], args.get("max_rows", 20)),
+                ensure_ascii=False,
+                indent=2,
+            )
+        except Exception as e:
+            return f"database_query 失败: {e}"
+
+    if name == "internal_api_request":
+        try:
+            return json.dumps(
+                internal_api_request("GET", args["path"], args.get("params") or {}),
+                ensure_ascii=False,
+                indent=2,
+            )
+        except Exception as e:
+            return f"internal_api_request 失败: {e}"
+
+    if name == "feishu_send_message":
+        try:
+            return json.dumps(
+                send_feishu_message(args["text"], args.get("title")),
+                ensure_ascii=False,
+                indent=2,
+            )
+        except Exception as e:
+            return f"feishu_send_message failed: {e}"
 
     if name == "ask_coworker":
         coworker_name = args["worker_name"]

@@ -5,6 +5,7 @@
 import json
 import os
 import re
+import shutil
 import sys
 import threading
 import traceback
@@ -16,7 +17,7 @@ from typing import Optional, Callable
 
 # ── 任务数据模型 ──
 
-VALID_TASK_TYPES = {"worker_task", "verified_task", "project_pipeline_task"}
+VALID_TASK_TYPES = {"manager_task", "worker_task", "verified_task", "project_pipeline_task"}
 VALID_TASK_STATUSES = {"pending", "running", "completed", "failed", "cancelled"}
 
 
@@ -24,7 +25,7 @@ VALID_TASK_STATUSES = {"pending", "running", "completed", "failed", "cancelled"}
 class AgentTask:
     """标准任务记录。JSON 可序列化，无需数据库。"""
     task_id: str
-    type: str                        # worker_task | verified_task | project_pipeline_task
+    type: str                        # manager_task | worker_task | verified_task | project_pipeline_task
     status: str = "pending"          # pending | running | completed | failed | cancelled
     description: str = ""
     worker_name: Optional[str] = None
@@ -79,6 +80,7 @@ def _extract_project_name_from_setup_result(text: str, fallback: str = "default_
 # ── 持久化 ──
 
 _TASKS_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "agent_tasks.json")
+_TASKS_BACKUP_FILE = f"{_TASKS_FILE}.bak"
 _task_lock = threading.Lock()
 _tasks_cache: dict[str, AgentTask] = {}
 
@@ -91,23 +93,50 @@ class TaskStore:
     """JSON 文件持久化 store。线程安全。"""
 
     @staticmethod
+    def _load_from_file(path: str) -> list[dict]:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    @staticmethod
+    def _write_all_locked():
+        data = [asdict(task) for task in _tasks_cache.values()]
+        tmp_path = f"{_TASKS_FILE}.{os.getpid()}.tmp"
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            if os.path.exists(_TASKS_FILE):
+                try:
+                    shutil.copyfile(_TASKS_FILE, _TASKS_BACKUP_FILE)
+                except OSError:
+                    pass
+            os.replace(tmp_path, _TASKS_FILE)
+        finally:
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+
+    @staticmethod
     def load() -> dict[str, AgentTask]:
         global _tasks_cache
         with _task_lock:
             if not os.path.exists(_TASKS_FILE):
                 return {}
-            try:
-                with open(_TASKS_FILE, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-            except json.JSONDecodeError as e:
-                import traceback
-                print(f"[TaskStore] 警告: agent_tasks.json 损坏，无法加载已有任务: {e}")
-                traceback.print_exc()
-                return {}
-            except OSError as e:
-                import traceback
-                print(f"[TaskStore] 警告: 无法读取 agent_tasks.json: {e}")
-                traceback.print_exc()
+            data = None
+            last_error = None
+            for candidate in (_TASKS_FILE, _TASKS_BACKUP_FILE):
+                if not os.path.exists(candidate):
+                    continue
+                try:
+                    data = TaskStore._load_from_file(candidate)
+                    break
+                except (json.JSONDecodeError, OSError) as e:
+                    last_error = e
+            if data is None:
+                print(f"[TaskStore] 警告: 无法读取任务持久化文件: {last_error}")
                 return {}
             _tasks_cache = {}
             for item in data:
@@ -138,12 +167,7 @@ class TaskStore:
         task.updated_at = _now()
         with _task_lock:
             _tasks_cache[task.task_id] = task
-            data = []
-            for t in _tasks_cache.values():
-                d = asdict(t)
-                data.append(d)
-            with open(_TASKS_FILE, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+            TaskStore._write_all_locked()
 
     @staticmethod
     def get(task_id: str) -> Optional[AgentTask]:
@@ -157,9 +181,28 @@ class TaskStore:
         with _task_lock:
             return list(_tasks_cache.values())
 
+    @staticmethod
+    def recover_incomplete(reason: str = "后端重启，未完成任务已中断") -> int:
+        global _tasks_cache
+        recovered = 0
+        with _task_lock:
+            for task in _tasks_cache.values():
+                if task.status not in {"pending", "running"}:
+                    continue
+                task.status = "failed"
+                task.progress = "执行中断"
+                task.error = reason if not task.error else f"{task.error} | {reason}"
+                task.logs.append(f"[{_now()}] 系统恢复: {reason}")
+                task.updated_at = _now()
+                recovered += 1
+            if recovered:
+                TaskStore._write_all_locked()
+        return recovered
+
 
 # 启动时加载缓存
 TaskStore.load()
+TaskStore.recover_incomplete()
 
 
 # ── 输入验证 ──
@@ -191,7 +234,7 @@ def validate_create_task(
             raise TaskValidationError(
                 f"未知 Worker: '{worker_name}'。可用: {available}"
             )
-    if task_type == "project_pipeline_task" and worker_name and worker_name not in workers:
+    if task_type in ("manager_task", "project_pipeline_task") and worker_name and worker_name not in workers:
         available = ", ".join(workers.keys())
         raise TaskValidationError(
             f"未知 Worker: '{worker_name}'。可用: {available}"
@@ -255,7 +298,9 @@ class TaskExecutor:
         self._notify(task)
 
         try:
-            if task.type == "worker_task":
+            if task.type == "manager_task":
+                self._run_manager_task(task)
+            elif task.type == "worker_task":
                 self._run_worker_task(task)
             elif task.type == "verified_task":
                 self._run_verified_task(task)
@@ -269,6 +314,42 @@ class TaskExecutor:
             self._append_log(task, traceback.format_exc())
             TaskStore.save(task)
             self._notify(task)
+
+    def _run_manager_task(self, task: AgentTask):
+        """执行 manager_task 类型，让 Manager 决策是否派发给 Worker。"""
+        from manager import run_manager_task
+
+        task.progress = "Manager 调度中..."
+        TaskStore.save(task)
+        self._notify(task)
+
+        try:
+            result = run_manager_task(self.workers, task.description)
+        except Exception as e:
+            task.status = "failed"
+            task.error = f"{type(e).__name__}: {e}"
+            task.progress = "Manager 执行异常"
+            self._append_log(task, f"执行异常: {e}")
+            TaskStore.save(task)
+            self._notify(task)
+            return
+
+        if task.cancel_requested:
+            task.status = "cancelled"
+            task.progress = "已取消"
+            self._append_log(task, "任务在运行中被取消")
+            TaskStore.save(task)
+            self._notify(task)
+            return
+
+        task.result = result.get("result", "")
+        task.artifacts = [{"type": "manager_tool", **item} for item in result.get("tool_calls", [])]
+        task.status = "completed"
+        task.progress = "完成"
+        task.logs.extend(result.get("log", []))
+        self._append_log(task, f"完成: {task.result[:200] if task.result else '(无输出)'}")
+        TaskStore.save(task)
+        self._notify(task)
 
     def _run_worker_task(self, task: AgentTask):
         """执行 worker_task 类型。"""
@@ -294,6 +375,8 @@ class TaskExecutor:
             task.error = f"{type(e).__name__}: {e}"
             task.progress = "Worker 执行异常"
             self._append_log(task, f"执行异常: {e}")
+            TaskStore.save(task)
+            self._notify(task)
             return
 
         # 检查取消请求
@@ -333,6 +416,8 @@ class TaskExecutor:
             task.error = f"{type(e).__name__}: {e}"
             task.progress = "验证闭环执行异常"
             self._append_log(task, f"执行异常: {e}")
+            TaskStore.save(task)
+            self._notify(task)
             return
 
         if task.cancel_requested:
@@ -388,6 +473,8 @@ class TaskExecutor:
             task.error = f"{type(e).__name__}: {e}"
             task.progress = "Pipeline 执行异常"
             self._append_log(task, f"执行异常: {e}")
+            TaskStore.save(task)
+            self._notify(task)
             return
 
         if task.cancel_requested:

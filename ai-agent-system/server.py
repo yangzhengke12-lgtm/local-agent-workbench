@@ -7,7 +7,7 @@ import io, json, os, sys, threading
 from contextlib import asynccontextmanager, redirect_stdout
 from datetime import datetime
 from pathlib import Path
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
@@ -16,6 +16,22 @@ import uvicorn
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from manager import load_workers, run_worker, default_client, DEFAULT_MODEL
 from runtime.config import APP_RUNTIME_NAME, APP_VERSION, MODEL_TIERS, get_provider_status
+from runtime.feishu_connector import send_feishu_task_reply
+from runtime.feishu_inbound import (
+    build_task_description,
+    challenge_response,
+    get_event_record,
+    get_task_id_for_event,
+    get_task_link,
+    inbound_status,
+    is_url_verification,
+    link_event_to_task,
+    mark_task_reply,
+    parse_inbound_message,
+    select_worker_for_text,
+    task_reply_text,
+    verify_event_token,
+)
 
 from runtime.agent_task import (
     AgentTask,
@@ -59,6 +75,8 @@ HISTORY = os.path.join(os.path.dirname(__file__), "chat_history.json")
 
 # ── 初始化 Agent Task 后台执行器 ──
 task_executor = init_executor(workers, max_workers=4)
+FEISHU_DEFAULT_WORKER = os.environ.get("FEISHU_DEFAULT_WORKER", "Elena")
+FEISHU_DEFAULT_TASK_TYPE = os.environ.get("FEISHU_DEFAULT_TASK_TYPE", "manager_task")
 
 # ── 桌面工作台 workspace 状态 ──
 _current_workspace = {"path": None, "set_at": None}
@@ -287,10 +305,8 @@ async def bc(msg):
 
 # ── Task 状态变更 → WebSocket 推送 ──
 def _on_task_update(task: AgentTask):
-    """任务状态变更时通过 WebSocket 广播。在线程中调用。"""
+    """Broadcast task updates and reply to Feishu when inbound tasks finish."""
     global _main_loop
-    if _main_loop is None:
-        return
     payload = {
         "type": "agent_task_update",
         "task_id": task.task_id,
@@ -298,10 +314,27 @@ def _on_task_update(task: AgentTask):
         "progress": task.progress,
         "message": task.result[:200] if task.result else (task.error or ""),
     }
+    if _main_loop is not None:
+        try:
+            asyncio.run_coroutine_threadsafe(bc(payload), _main_loop)
+        except Exception:
+            pass
+    if task.status in {"completed", "failed", "cancelled"}:
+        _maybe_reply_to_feishu(task)
+
+
+def _maybe_reply_to_feishu(task: AgentTask):
+    link = get_task_link(task.task_id)
+    if not link or link.get("reply_sent"):
+        return
     try:
-        asyncio.run_coroutine_threadsafe(bc(payload), _main_loop)
-    except Exception:
-        pass
+        result = send_feishu_task_reply(
+            task_reply_text(task),
+            chat_id=link.get("chat_id"),
+        )
+    except Exception as e:
+        result = {"ok": False, "provider": "feishu_reply", "error": str(e)}
+    mark_task_reply(task.task_id, result)
 
 # 注入通知回调
 task_executor.set_notify_callback(_on_task_update)
@@ -806,6 +839,33 @@ class CreateTaskRequest(BaseModel):
         return v.strip()
 
 
+def _create_agent_task_record(
+    task_type: str,
+    description: str,
+    worker_name: str | None = None,
+    project_name: str | None = None,
+    workspace_path: str | None = None,
+    submit: bool = True,
+) -> AgentTask:
+    try:
+        validate_create_task(task_type, description, worker_name, workers, workspace_path)
+    except TaskValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    task = AgentTask(
+        task_id=_generate_task_id(),
+        type=task_type,
+        description=description,
+        worker_name=worker_name,
+        project_name=project_name,
+        workspace_path=workspace_path or _current_workspace.get("path"),
+    )
+    TaskStore.save(task)
+    if submit:
+        task_executor.submit(task)
+    return task
+
+
 class TaskSummaryResponse(BaseModel):
     task_id: str
     type: str
@@ -842,33 +902,86 @@ class TaskDetailResponse(BaseModel):
 
 # ── 路由 ──
 
+@app.get("/integrations/feishu/status")
+async def get_feishu_integration_status():
+    return JSONResponse({
+        "inbound": inbound_status(),
+        "default_task_type": FEISHU_DEFAULT_TASK_TYPE,
+        "default_worker": FEISHU_DEFAULT_WORKER,
+        "app_reply_configured": bool(os.environ.get("FEISHU_APP_ID") and os.environ.get("FEISHU_APP_SECRET")),
+        "webhook_reply_configured": bool(os.environ.get("FEISHU_WEBHOOK_URL")),
+    })
+
+
+@app.post("/integrations/feishu/events")
+async def receive_feishu_event(request: Request):
+    payload = await request.json()
+    if is_url_verification(payload):
+        expected_token = os.environ.get("FEISHU_EVENT_VERIFICATION_TOKEN", "").strip()
+        if expected_token and not verify_event_token(payload):
+            raise HTTPException(status_code=403, detail="Invalid Feishu verification token")
+        return JSONResponse(challenge_response(payload))
+
+    if not os.environ.get("FEISHU_EVENT_VERIFICATION_TOKEN", "").strip():
+        raise HTTPException(status_code=503, detail="FEISHU_EVENT_VERIFICATION_TOKEN is not configured")
+    if not verify_event_token(payload):
+        raise HTTPException(status_code=403, detail="Invalid Feishu verification token")
+
+    message = parse_inbound_message(payload)
+    existing_task_id = get_task_id_for_event(message.event_id)
+    if existing_task_id:
+        event_record = get_event_record(message.event_id) or {}
+        existing_task = TaskStore.get(existing_task_id)
+        fallback_selection = select_worker_for_text(message.text, workers, FEISHU_DEFAULT_WORKER)
+        return JSONResponse({
+            "ok": True,
+            "duplicate": True,
+            "event_id": message.event_id,
+            "task_id": existing_task_id,
+            "task_type": getattr(existing_task, "type", None),
+            "worker_name": event_record.get("worker_name") or getattr(existing_task, "worker_name", None) or fallback_selection.worker_name,
+            "worker_selection": event_record.get("worker_selection") or fallback_selection.source,
+        })
+
+    selection = select_worker_for_text(message.text, workers, FEISHU_DEFAULT_WORKER)
+    task_type = "worker_task" if selection.source != "default" else FEISHU_DEFAULT_TASK_TYPE
+    worker_name = selection.worker_name if task_type in {"worker_task", "verified_task"} else None
+
+    task = _create_agent_task_record(
+        task_type,
+        build_task_description(message, selection.task_text, worker_name),
+        worker_name,
+        submit=False,
+    )
+    link_event_to_task(message, task.task_id, worker_name or "Manager", selection.source)
+    task_executor.submit(task)
+    return JSONResponse({
+        "ok": True,
+        "event_id": message.event_id,
+        "task_id": task.task_id,
+        "task_type": task.type,
+        "status": task.status,
+        "worker_name": task.worker_name or "Manager",
+        "worker_selection": selection.source,
+    })
+
+
 @app.post("/agent/tasks")
 async def create_agent_task(req: CreateTaskRequest):
-    """创建异步 Agent 任务。立即返回 task_id，后台执行。"""
-    # 额外校验 worker_name（Pydantic 已校验 type 和 description)
-    try:
-        validate_create_task(req.type, req.description, req.worker_name, workers, req.workspace_path)
-    except TaskValidationError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    task = AgentTask(
-        task_id=_generate_task_id(),
-        type=req.type,
-        description=req.description,
-        worker_name=req.worker_name,
-        project_name=req.project_name,
-        workspace_path=req.workspace_path or _current_workspace.get("path"),
+    """Create an async Agent task and return immediately with task_id."""
+    task = _create_agent_task_record(
+        req.type,
+        req.description,
+        req.worker_name,
+        req.project_name,
+        req.workspace_path,
     )
-    TaskStore.save(task)
-
-    # 提交到后台线程池执行
-    task_executor.submit(task)
 
     return JSONResponse({
         "ok": True,
         "task_id": task.task_id,
         "status": task.status,
-        "message": f"任务已创建，类型={task.type}",
+        "message": f"task created, type={task.type}",
     })
 
 

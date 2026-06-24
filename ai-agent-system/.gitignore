@@ -9,7 +9,10 @@ __pycache__/
 project_states/
 
 agent_tasks.json
+agent_tasks.json.bak
+feishu_events.json
 runtime_settings.json
+examples/demo_business.db
 task_board.json
 team_knowledge.json
 worker_scores.json
@@ -29,3 +32,4 @@ desktop/launcher/bin/
 desktop/launcher/obj/
 
 AgentWorkbench.exe
+tools/*.exe

@@ -530,6 +530,141 @@ def execute_manager_tool(name: str, args: dict, workers: dict) -> str:
 
 
 # ── Manager 对话循环 ───────────────────────────────────────
+def _build_manager_system_prompt(workers: dict) -> str:
+    roster = "\n".join(
+        f"- {w['name']} | {w['role']} | {w['description']} | tools: {', '.join(w['tool_names'])}"
+        for w in workers.values()
+    )
+    return (
+        "You are the Manager agent for a local multi-agent workbench. "
+        "The user sends requests in Feishu or the desktop app. "
+        "Analyze each request, choose whether to answer directly or delegate to the right worker, "
+        "and summarize the final outcome for the user.\n\n"
+        "Team roster:\n"
+        f"{roster}\n\n"
+        "Rules:\n"
+        "- Reply in the user's language; for Chinese requests, reply in concise Chinese.\n"
+        "- Use delegate_task for ordinary work and delegate_with_verification for risky code or quality-critical work.\n"
+        "- Use project_setup and run_project_pipeline for broad multi-step project work.\n"
+        "- Use get_system_metadata for runtime facts instead of guessing.\n"
+        "- If you delegate, wait for the tool result and then give a clear final summary.\n"
+        "- Do not claim work succeeded unless a tool result or direct evidence supports it."
+    )
+
+
+def run_manager_task(workers: dict, task: str, max_turns: int = 5) -> dict:
+    """Run one Manager task outside the interactive CLI loop."""
+    manager_tools = build_manager_tools(workers)
+    manager_system = _build_manager_system_prompt(workers)
+    messages = [{"role": "user", "content": task}]
+    log: list[str] = []
+    final_text = ""
+    tool_summaries: list[dict] = []
+
+    (manager_provider, manager_model_id), needs_confirm = select_manager_model(task)
+    log.append(f"Manager route: [{manager_provider}]{manager_model_id}")
+    if needs_confirm:
+        log.append("Major-decision signal detected")
+
+    for _manager_turn in range(max_turns):
+        blocks = call_llm(
+            provider_key=manager_provider,
+            model_id=manager_model_id,
+            messages=messages,
+            system_prompt=manager_system,
+            tools=manager_tools,
+            disable_thinking=False,
+        )
+
+        assistant_content = []
+        tool_use_blocks = []
+        for block in blocks:
+            if block["type"] == "text":
+                final_text = block["text"]
+                log.append(f"Manager: {final_text[:500]}")
+                assistant_content.append(block)
+            elif block["type"] == "thinking":
+                assistant_content.append(block)
+            elif block["type"] == "tool_use":
+                tool_use_blocks.append(block)
+
+        if not tool_use_blocks:
+            if assistant_content:
+                messages.append({"role": "assistant", "content": assistant_content})
+            break
+
+        for block in tool_use_blocks:
+            assistant_content.append(block)
+        if assistant_content:
+            messages.append({"role": "assistant", "content": assistant_content})
+
+        def _run_tool(block: dict) -> tuple[dict, str]:
+            result = execute_manager_tool(block["name"], block["input"], workers)
+            return block, result
+
+        if len(tool_use_blocks) == 1:
+            tool_results = [_run_tool(tool_use_blocks[0])]
+        else:
+            tool_results = []
+            with ThreadPoolExecutor(max_workers=len(tool_use_blocks)) as executor:
+                future_to_block = {
+                    executor.submit(_run_tool, block): block
+                    for block in tool_use_blocks
+                }
+                for future in as_completed(future_to_block):
+                    block = future_to_block[future]
+                    try:
+                        tool_results.append(future.result())
+                    except Exception as e:
+                        tool_results.append((block, f"Manager tool failed: {e}"))
+
+        tool_result_content = []
+        for block, result in tool_results:
+            log.append(f"Manager tool: {block['name']}({json.dumps(block['input'], ensure_ascii=False)})")
+            log.append(f"Tool result: {str(result)[:1000]}")
+            tool_summaries.append({
+                "name": block["name"],
+                "input": block["input"],
+                "result_preview": str(result)[:1000],
+            })
+            tool_result_content.append({
+                "type": "tool_result",
+                "tool_use_id": block["id"],
+                "content": result,
+            })
+
+        messages.append({"role": "user", "content": tool_result_content})
+
+        follow_up_blocks = call_llm(
+            provider_key=manager_provider,
+            model_id=manager_model_id,
+            messages=messages,
+            system_prompt=manager_system,
+            tools=manager_tools,
+            disable_thinking=False,
+        )
+
+        follow_up_content = []
+        for block in follow_up_blocks:
+            if block["type"] == "text":
+                final_text = block["text"]
+                log.append(f"Manager final: {final_text[:500]}")
+                follow_up_content.append(block)
+            elif block["type"] == "thinking":
+                follow_up_content.append(block)
+        if follow_up_content:
+            messages.append({"role": "assistant", "content": follow_up_content})
+        break
+
+    return {
+        "log": log,
+        "result": final_text or json.dumps({"status": "completed", "tool_calls": tool_summaries}, ensure_ascii=False),
+        "messages": messages,
+        "model_used": f"[{manager_provider}]{manager_model_id}",
+        "tool_calls": tool_summaries,
+    }
+
+
 def main():
     workers = load_workers()
     if not workers:
