@@ -17,6 +17,7 @@
 - URL verification challenge 自动返回。
 - `im.message.receive_v1` 文本消息会创建 Agent 任务。
 - 普通消息默认走 `manager_task`，由 Manager 调度。
+- Manager 会持续执行后续工具调用或 Worker 委派，直到生成最终答复或达到轮数上限。
 - `/worker Alex ...`、`@Sophia ...`、`Elena: ...` 这类显式前缀会创建指定 Worker 任务。
 - 同一个 `chat_id` 的最近飞书消息会作为上下文注入新任务，便于回答“结合上面”“刚才说的”等问题。
 - 新任务会附带当天 Agent 任务摘要，便于回答“今天做了什么”“发一份今日进展”等问题。
@@ -197,7 +198,7 @@ python -m pytest -q
 当前预期：
 
 ```text
-249 passed
+251 passed
 ```
 
 飞书相关覆盖点包括：
@@ -205,6 +206,7 @@ python -m pytest -q
 - challenge 响应。
 - token 校验。
 - 文本消息解析。
+- Manager 多轮工具调用。
 - 同一 `chat_id` 的上文注入。
 - 当天 Agent 任务摘要注入。
 - 本地 Git 工作区变更摘要注入。
@@ -248,6 +250,7 @@ Implemented behavior:
 - URL verification challenge responses.
 - `im.message.receive_v1` text events create Agent tasks.
 - Normal messages default to `manager_task`.
+- Manager tasks continue through follow-up tool calls or worker delegation until a final answer is produced or the turn limit is reached.
 - Explicit prefixes such as `/worker Alex ...`, `@Sophia ...`, or `Elena: ...` create Worker tasks.
 - Recent messages from the same `chat_id` are injected into new tasks as Feishu chat context.
 - New tasks include a same-day Agent task summary for requests such as "what did we do today?"
@@ -312,7 +315,7 @@ python -m pytest -q
 Expected test result:
 
 ```text
-249 passed
+251 passed
 ```
 
 ### Context Boundary

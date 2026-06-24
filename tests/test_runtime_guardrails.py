@@ -391,6 +391,47 @@ class TestRuntimeGuardrails(unittest.TestCase):
         self.assertTrue(payload["delivery"]["ok"])
         self.assertIn("飞书发送：成功", payload["summary"])
 
+    def test_run_manager_task_continues_when_followup_requests_more_tools(self):
+        workers = {
+            "Alex": {
+                "name": "Alex",
+                "role": "Developer",
+                "description": "Reads code and explains deployment paths.",
+                "tool_names": [],
+            }
+        }
+        responses = [
+            [
+                {"type": "text", "text": "先看运行信息。"},
+                {"type": "tool_use", "id": "tool-1", "name": "get_system_metadata", "input": {}},
+            ],
+            [
+                {"type": "text", "text": "信息还不够，让 Alex 检查代码。"},
+                {
+                    "type": "tool_use",
+                    "id": "tool-2",
+                    "name": "delegate_task",
+                    "input": {"worker_name": "Alex", "task": "检查跨电脑使用方式"},
+                },
+            ],
+            [{"type": "text", "text": "最终答案：在其他电脑访问服务器公网地址和前端入口。"}],
+        ]
+        executed_tools = []
+
+        def fake_execute(name, args, workers_arg):
+            executed_tools.append(name)
+            return f"{name} result"
+
+        with patch("manager.select_manager_model", return_value=(("gpt", "test-model"), False)):
+            with patch("manager.build_manager_tools", return_value=[]):
+                with patch("manager.execute_manager_tool", side_effect=fake_execute):
+                    with patch("manager.call_llm", side_effect=responses):
+                        result = manager.run_manager_task(workers, "怎么在别的电脑上使用？")
+
+        self.assertEqual(executed_tools, ["get_system_metadata", "delegate_task"])
+        self.assertEqual(result["result"], "最终答案：在其他电脑访问服务器公网地址和前端入口。")
+        self.assertNotIn("信息还不够", result["result"])
+
 
 class TestFeishuBidirectional(unittest.TestCase):
     def test_feishu_task_reply_text_is_clean_for_chat(self):

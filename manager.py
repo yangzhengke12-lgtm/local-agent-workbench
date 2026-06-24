@@ -635,27 +635,6 @@ def run_manager_task(workers: dict, task: str, max_turns: int = 5) -> dict:
 
         messages.append({"role": "user", "content": tool_result_content})
 
-        follow_up_blocks = call_llm(
-            provider_key=manager_provider,
-            model_id=manager_model_id,
-            messages=messages,
-            system_prompt=manager_system,
-            tools=manager_tools,
-            disable_thinking=False,
-        )
-
-        follow_up_content = []
-        for block in follow_up_blocks:
-            if block["type"] == "text":
-                final_text = block["text"]
-                log.append(f"Manager final: {final_text[:500]}")
-                follow_up_content.append(block)
-            elif block["type"] == "thinking":
-                follow_up_content.append(block)
-        if follow_up_content:
-            messages.append({"role": "assistant", "content": follow_up_content})
-        break
-
     return {
         "log": log,
         "result": final_text or json.dumps({"status": "completed", "tool_calls": tool_summaries}, ensure_ascii=False),
