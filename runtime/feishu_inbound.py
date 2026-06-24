@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import threading
 from dataclasses import dataclass, asdict
 from datetime import datetime
@@ -27,6 +28,9 @@ MAX_CONTEXT_MESSAGES = 8
 MAX_CONTEXT_MESSAGE_CHARS = 500
 MAX_TODAY_TASKS = 12
 MAX_TASK_SUMMARY_CHARS = 700
+MAX_WORKSPACE_SUMMARY_CHARS = 3000
+MAX_GIT_SECTION_CHARS = 900
+MAX_TODAY_COMMITS = 10
 
 EVENT_TYPE_MESSAGE_RECEIVE = "im.message.receive_v1"
 EVENT_TYPE_URL_VERIFICATION = "url_verification"
@@ -338,6 +342,7 @@ def build_task_description(
     worker_name: str | None = None,
     chat_context: list[dict[str, Any]] | None = None,
     today_tasks: str | None = None,
+    workspace_changes: str | None = None,
 ) -> str:
     parts = [
         "来自飞书群聊的用户请求，请作为 Agent 任务处理。",
@@ -356,6 +361,9 @@ def build_task_description(
     if today_tasks:
         parts.append("\n今日 Agent 任务摘要（用于回答“今天做了什么”等问题）:")
         parts.append(today_tasks)
+    if workspace_changes:
+        parts.append("\n本地工作区变更摘要（只读，不含完整 diff，用于回答“今天做了什么”等问题）:")
+        parts.append(workspace_changes)
     if worker_name:
         parts.append(f"\n[selected worker: {worker_name}]")
     if message.chat_id:
@@ -386,6 +394,8 @@ def _task_result_summary(result: Any) -> str:
 
 def _task_description_brief(description: Any) -> str:
     text = str(description or "").strip()
+    if "\n本地工作区变更摘要" in text:
+        text = text.split("\n本地工作区变更摘要", 1)[0].strip()
     if "\n今日 Agent 任务摘要" in text:
         text = text.split("\n今日 Agent 任务摘要", 1)[0].strip()
     if "\n近期飞书群聊上下文" in text:
@@ -435,6 +445,60 @@ def summarize_today_tasks(
     if len(candidates) > len(shown):
         lines.insert(0, f"- ... 今日共有 {len(candidates)} 个任务，这里显示最近 {len(shown)} 个。")
     return "\n".join(lines)
+
+
+def _run_git_summary_command(cwd: Path, args: list[str], max_chars: int = MAX_GIT_SECTION_CHARS) -> str:
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=8,
+            cwd=str(cwd),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if result.returncode != 0:
+        return ""
+    output = (result.stdout or "").strip()
+    return _shorten(output, max_chars) if output else ""
+
+
+def summarize_workspace_changes(workspace_path: str | os.PathLike[str] | None = None, today: str | None = None) -> str:
+    workspace = Path(workspace_path).expanduser() if workspace_path else REPO_ROOT
+    try:
+        workspace = workspace.resolve()
+    except OSError:
+        return ""
+    if not workspace.exists():
+        return ""
+
+    repo_root = _run_git_summary_command(workspace, ["rev-parse", "--show-toplevel"], 500)
+    if not repo_root:
+        return ""
+
+    target_day = today or datetime.now().strftime("%Y-%m-%d")
+    sections = []
+    status = _run_git_summary_command(workspace, ["status", "--short"])
+    if status:
+        sections.append(f"[git status --short]\n{status}")
+    diff_stat = _run_git_summary_command(workspace, ["diff", "--stat"])
+    if diff_stat:
+        sections.append(f"[git diff --stat]\n{diff_stat}")
+    staged_stat = _run_git_summary_command(workspace, ["diff", "--cached", "--stat"])
+    if staged_stat:
+        sections.append(f"[git diff --cached --stat]\n{staged_stat}")
+    today_commits = _run_git_summary_command(
+        workspace,
+        ["log", f"--since={target_day} 00:00", "--oneline", "--decorate", f"-n{MAX_TODAY_COMMITS}"],
+    )
+    if today_commits:
+        sections.append(f"[today commits since {target_day} 00:00]\n{today_commits}")
+
+    if not sections:
+        return f"workspace: {repo_root}\n- 当前工作区没有未提交变更，今天暂无本地提交。"
+    return _shorten(f"workspace: {repo_root}\n\n" + "\n\n".join(sections), MAX_WORKSPACE_SUMMARY_CHARS)
 
 
 def task_reply_text(task: Any) -> str:

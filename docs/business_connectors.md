@@ -126,12 +126,13 @@ POST https://<your-public-host>/integrations/feishu/events
 Elena: 写项目日报
 ```
 
-创建任务时，后端会注入两类上下文：
+创建任务时，后端会注入三类上下文：
 
 - 同一 `chat_id` 最近收到的文本消息，用来支持“结合上面”“刚才说的”这类请求。
 - 当天 `agent_tasks.json` 中的 Agent 任务摘要，用来支持“今天做了什么”“写今日进展”这类请求。
+- 当前本地 Git 工作区摘要，包括未提交文件、diff 统计、暂存区统计和当天提交标题，用来支持“今天本地改了什么”“写项目日报”这类请求。
 
-注意：这里的群聊上下文只来自飞书实际投递到 webhook 的事件，不是完整群历史读取。运行时状态保存在本地 `feishu_events.json`，并已被 `.gitignore` 忽略。
+注意：这里的群聊上下文只来自飞书实际投递到 webhook 的事件，不是完整群历史读取。运行时状态保存在本地 `feishu_events.json`，并已被 `.gitignore` 忽略。本地 Git 摘要是只读的，不会自动注入完整 diff 或文件内容。
 
 必要环境变量：
 
@@ -272,9 +273,9 @@ POST http(s)://<your-public-host>/integrations/feishu/events
 
 The endpoint handles URL verification by returning the `challenge` value, then accepts `im.message.receive_v1` text events. Each event id is persisted in `feishu_events.json`, so retries from Feishu do not create duplicate Agent tasks.
 
-When creating a task, the backend injects recent text messages from the same `chat_id` and a same-day summary from `agent_tasks.json`. This supports requests such as "based on the messages above" and "summarize what we did today."
+When creating a task, the backend injects recent text messages from the same `chat_id`, a same-day summary from `agent_tasks.json`, and a read-only local Git workspace summary. This supports requests such as "based on the messages above", "summarize what we did today", and "summarize today's local file changes."
 
-Important boundary: this context is built only from events Feishu delivered to the webhook. It is not full group-history access. Runtime state lives in local `feishu_events.json`, which is ignored by git.
+Important boundary: chat context is built only from events Feishu delivered to the webhook. It is not full group-history access. Runtime state lives in local `feishu_events.json`, which is ignored by git. The local Git summary includes status, diff stats, staged diff stats, and same-day commit titles, not full diffs or file contents.
 
 Required app settings:
 
@@ -291,7 +292,7 @@ If `FEISHU_APP_ID` and `FEISHU_APP_SECRET` are configured, task completion repli
 Current boundary:
 
 - Supported: URL verification, token validation, unencrypted text message events, event idempotency, task-result replies.
-- Not yet supported: encrypted event payloads via `FEISHU_EVENT_ENCRYPT_KEY`, full group-history fetching, interactive cards, document events, native Feishu slash commands, or user identity permission mapping.
+- Not yet supported: encrypted event payloads via `FEISHU_EVENT_ENCRYPT_KEY`, full group-history fetching, full-diff injection, interactive cards, document events, native Feishu slash commands, or user identity permission mapping.
 
 See [feishu_integration.md](feishu_integration.md) for the full setup flow.
 

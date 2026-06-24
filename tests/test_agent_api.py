@@ -334,6 +334,38 @@ class TestTaskAPI(unittest.TestCase):
         self.assertIsNone(task.worker_name)
         self.assertIn("请生成今天项目日报", task.description)
 
+    def test_feishu_message_event_includes_workspace_changes(self):
+        event_id = f"evt_api_workspace_{_generate_task_id()}"
+        payload = {
+            "schema": "2.0",
+            "header": {
+                "event_id": event_id,
+                "event_type": "im.message.receive_v1",
+                "token": "verify-token",
+            },
+            "event": {
+                "sender": {"sender_id": {"open_id": "ou_workspace"}},
+                "message": {
+                    "message_id": f"om_{event_id}",
+                    "chat_id": f"oc_api_workspace_{_generate_task_id()}",
+                    "message_type": "text",
+                    "content": json.dumps({"text": "总结今天本地改了什么并发到群里"}, ensure_ascii=False),
+                },
+            },
+        }
+        fake_changes = "[git status --short]\nM runtime/feishu_inbound.py\nM server.py"
+
+        with patch.dict(os.environ, {"FEISHU_EVENT_VERIFICATION_TOKEN": "verify-token"}, clear=False):
+            with patch("server.summarize_workspace_changes", return_value=fake_changes):
+                resp = client.post("/integrations/feishu/events", json=payload)
+
+        self.assertEqual(resp.status_code, 200, resp.text)
+        task = TaskStore.get(resp.json()["task_id"])
+        self.assertIsNotNone(task)
+        self.assertIn("本地工作区变更摘要", task.description)
+        self.assertIn("M runtime/feishu_inbound.py", task.description)
+        self.assertIn("M server.py", task.description)
+
     def test_feishu_message_event_includes_prior_chat_context(self):
         first_event_id = f"evt_api_context_1_{_generate_task_id()}"
         second_event_id = f"evt_api_context_2_{_generate_task_id()}"

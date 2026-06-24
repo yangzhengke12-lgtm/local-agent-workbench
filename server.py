@@ -30,6 +30,7 @@ from runtime.feishu_inbound import (
     mark_task_reply,
     parse_inbound_message,
     select_worker_for_text,
+    summarize_workspace_changes,
     summarize_today_tasks,
     task_reply_text,
     verify_event_token,
@@ -950,6 +951,7 @@ async def receive_feishu_event(request: Request):
     worker_name = selection.worker_name if task_type in {"worker_task", "verified_task"} else None
     chat_context = get_chat_context(message.chat_id)
     today_tasks = summarize_today_tasks(TaskStore.list_all())
+    workspace_changes = summarize_workspace_changes(_current_workspace.get("path"))
 
     task = _create_agent_task_record(
         task_type,
@@ -959,6 +961,7 @@ async def receive_feishu_event(request: Request):
             worker_name,
             chat_context=chat_context,
             today_tasks=today_tasks,
+            workspace_changes=workspace_changes,
         ),
         worker_name,
         submit=False,

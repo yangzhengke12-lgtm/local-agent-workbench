@@ -1,5 +1,6 @@
 import os
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -23,6 +24,7 @@ from runtime.feishu_inbound import (
     challenge_response,
     is_url_verification,
     parse_inbound_message,
+    summarize_workspace_changes,
     summarize_today_tasks,
     select_worker_for_text,
     task_reply_text,
@@ -511,12 +513,36 @@ class TestFeishuBidirectional(unittest.TestCase):
                 }
             ],
             today_tasks=today_tasks,
+            workspace_changes="[git status --short]\nM runtime/feishu_inbound.py",
         )
 
         self.assertIn("近期飞书群聊上下文", description)
         self.assertIn("我们已经完成了飞书事件订阅和 GitHub 同步", description)
         self.assertIn("今日 Agent 任务摘要", description)
         self.assertIn("完成飞书双向接入", description)
+        self.assertIn("本地工作区变更摘要", description)
+        self.assertIn("M runtime/feishu_inbound.py", description)
+
+    def test_summarize_workspace_changes_reports_local_git_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            subprocess_env = os.environ.copy()
+            subprocess_env.setdefault("PYTHONUTF8", "1")
+            subprocess.run(["git", "init"], cwd=tmp, check=True, capture_output=True, text=True, env=subprocess_env)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp, check=True)
+            subprocess.run(["git", "config", "user.name", "Test User"], cwd=tmp, check=True)
+            readme = os.path.join(tmp, "README.md")
+            with open(readme, "w", encoding="utf-8") as f:
+                f.write("hello\n")
+            subprocess.run(["git", "add", "README.md"], cwd=tmp, check=True)
+            subprocess.run(["git", "commit", "-m", "initial"], cwd=tmp, check=True, capture_output=True, text=True, env=subprocess_env)
+            with open(readme, "a", encoding="utf-8") as f:
+                f.write("today\n")
+
+            summary = summarize_workspace_changes(tmp)
+
+        self.assertIn("[git status --short]", summary)
+        self.assertIn("README.md", summary)
+        self.assertIn("[git diff --stat]", summary)
 
     def test_feishu_app_message_uses_chat_id(self):
         captured = {}

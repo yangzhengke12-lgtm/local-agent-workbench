@@ -20,6 +20,7 @@
 - `/worker Alex ...`、`@Sophia ...`、`Elena: ...` 这类显式前缀会创建指定 Worker 任务。
 - 同一个 `chat_id` 的最近飞书消息会作为上下文注入新任务，便于回答“结合上面”“刚才说的”等问题。
 - 新任务会附带当天 Agent 任务摘要，便于回答“今天做了什么”“发一份今日进展”等问题。
+- 新任务会附带本地 Git 工作区摘要，包括未提交文件、diff 统计和当天提交标题，便于根据真实文件改动写日报。
 - 事件按 `event_id` 去重，飞书重试不会重复创建任务。
 - 任务完成、失败或取消后，会把干净的结果正文回填到原 `chat_id`。
 
@@ -196,7 +197,7 @@ python -m pytest -q
 当前预期：
 
 ```text
-245 passed
+249 passed
 ```
 
 飞书相关覆盖点包括：
@@ -206,6 +207,7 @@ python -m pytest -q
 - 文本消息解析。
 - 同一 `chat_id` 的上文注入。
 - 当天 Agent 任务摘要注入。
+- 本地 Git 工作区变更摘要注入。
 - Worker 前缀选择。
 - app message 发送到 `chat_id`。
 - 回填消息不再带 `[Agent Task Result]`、`任务ID` 等调试外壳。
@@ -213,6 +215,8 @@ python -m pytest -q
 ### 10. 上下文边界
 
 飞书事件处理会把最近收到的同群聊文本事件保存在本地 `feishu_events.json` 的 `chat_history` 中；该文件已被 `.gitignore` 忽略，不会提交到仓库。创建新 Agent 任务时，后端会读取同一个 `chat_id` 的最近若干条消息，并附加当天 `agent_tasks.json` 中的任务摘要。
+
+同时，后端会对当前本地 Git 工作区做只读摘要：`git status --short`、`git diff --stat`、`git diff --cached --stat` 和当天 `git log --oneline`。这让机器人回答“今天本地改了什么”“汇总今天进展”时能看到文件级改动。为降低泄露风险，这里不会自动注入完整 diff 或文件内容。
 
 这不是“读取完整飞书群历史”。只有飞书实际投递到 `/integrations/feishu/events` 的文本事件才会进入上下文。如果机器人没有收到普通群消息事件，或者应用权限/事件订阅没有覆盖某些消息，后端就无法知道那些“上面的聊天”。如需补齐历史消息，需要额外申请飞书消息历史相关权限，并接入主动拉取消息历史的 API。
 
@@ -247,6 +251,7 @@ Implemented behavior:
 - Explicit prefixes such as `/worker Alex ...`, `@Sophia ...`, or `Elena: ...` create Worker tasks.
 - Recent messages from the same `chat_id` are injected into new tasks as Feishu chat context.
 - New tasks include a same-day Agent task summary for requests such as "what did we do today?"
+- New tasks include a read-only local Git workspace summary: changed files, diff stats, staged diff stats, and same-day commit titles.
 - Event ids are persisted and deduplicated.
 - Finished tasks reply to the original `chat_id` with clean task output.
 
@@ -307,12 +312,14 @@ python -m pytest -q
 Expected test result:
 
 ```text
-247 passed
+249 passed
 ```
 
 ### Context Boundary
 
 The inbound handler stores recent received text events per `chat_id` in local `feishu_events.json`; this file is ignored by git. When a new Agent task is created, the backend injects recent messages from the same chat plus a same-day summary from `agent_tasks.json`.
+
+The backend also injects a read-only local Git workspace summary from `git status --short`, `git diff --stat`, `git diff --cached --stat`, and same-day `git log --oneline`. This helps Feishu requests such as "summarize today's local changes" produce reports based on actual file changes. Full diffs and file contents are not automatically injected.
 
 This is not full Feishu group-history access. The backend can only remember messages that Feishu actually delivered to `/integrations/feishu/events`. If the app is not subscribed to ordinary group-message events, lacks permission, or was offline before a message arrived, that message will not be available as context. Full history recovery requires additional Feishu message-history permissions and an API fetch path.
 
