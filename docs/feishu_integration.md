@@ -24,7 +24,7 @@
 ### 1. 启动后端
 
 ```bash
-cd ai-agent-system
+cd local-agent-workbench
 python server.py
 ```
 
@@ -32,6 +32,14 @@ python server.py
 
 ```bash
 curl http://127.0.0.1:8000/health
+curl http://127.0.0.1:8000/integrations/feishu/status
+```
+
+给自动化 Agent 的最小健康检查顺序：
+
+```bash
+curl http://127.0.0.1:8000/health
+curl http://127.0.0.1:8000/agent/runtime
 curl http://127.0.0.1:8000/integrations/feishu/status
 ```
 
@@ -161,6 +169,20 @@ curl http://127.0.0.1:8000/integrations/feishu/status
 - `app_reply_configured`: 是否配置了 App ID 和 App Secret，可回填原群聊。
 - `webhook_reply_configured`: 是否配置了自定义机器人 webhook，可作为固定群通知兜底。
 
+如果只想验证 challenge 逻辑，可以向本地服务发送一个模拟请求：
+
+```bash
+curl -X POST http://127.0.0.1:8000/integrations/feishu/events \
+  -H "Content-Type: application/json" \
+  -d '{"type":"url_verification","token":"replace-with-event-token","challenge":"local-test"}'
+```
+
+预期返回：
+
+```json
+{"challenge":"local-test"}
+```
+
 ### 9. 运行测试
 
 ```bash
@@ -218,7 +240,7 @@ Implemented behavior:
 1. Start the backend:
 
 ```bash
-cd ai-agent-system
+cd local-agent-workbench
 python server.py
 ```
 

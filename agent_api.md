@@ -38,8 +38,19 @@ curl -s -X POST http://localhost:8000/agent/tasks \
   "ok": true,
   "task_id": "task_20260620_173045_a1b2c3",
   "status": "pending",
-  "message": "任务已创建，类型=worker_task"
+  "message": "task created, type=worker_task"
 }
+```
+
+如果调用方不确定要指定哪个 Worker，可以创建 `manager_task`，只传 `description`，让 Manager 自己判断是否需要分派给 Worker：
+
+```bash
+curl -s -X POST http://localhost:8000/agent/tasks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "manager_task",
+    "description": "检查当前项目状态，并决定是否需要安排 Worker 处理"
+  }' | python -m json.tool
 ```
 
 ### Step 2: 轮询任务状态
@@ -144,7 +155,7 @@ curl -s -X POST http://localhost:8000/agent/tasks \
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| type | string | ✅ | `worker_task` / `verified_task` / `project_pipeline_task` |
+| type | string | ✅ | `manager_task` / `worker_task` / `verified_task` / `project_pipeline_task` |
 | description | string | ✅ | 任务描述，越具体越好 |
 | worker_name | string | 条件必填 | `worker_task` 和 `verified_task` 必须指定 |
 | project_name | string | 否 | 项目名称（project_pipeline_task 可选） |
@@ -156,7 +167,7 @@ curl -s -X POST http://localhost:8000/agent/tasks \
   "ok": true,
   "task_id": "task_20260620_173045_a1b2c3",
   "status": "pending",
-  "message": "任务已创建，类型=worker_task"
+  "message": "task created, type=worker_task"
 }
 ```
 
@@ -301,13 +312,25 @@ ws.onmessage = (event) => {
 
 | type | 说明 | 后台操作 |
 |------|------|----------|
+| `manager_task` | 交给 Manager 判断、分派或直接回复；适合飞书普通群消息和不确定 Worker 的外部调用 | `run_manager_task(workers, description)` |
 | `worker_task` | 指派单个 Worker 执行任务 | `run_worker(cfg, description, fresh_session=True)` |
 | `verified_task` | Worker 执行 + Sophia∥Nathaniel 验证闭环 | `delegate_with_verification(workers, worker_name, description)` |
 | `project_pipeline_task` | 全项目 Pipeline（DAG 多步骤） | `project_setup()` → `run_project_pipeline()` |
 
+## 飞书事件入口
+
+飞书开放平台事件订阅使用独立入口：
+
+```text
+POST /integrations/feishu/events
+GET  /integrations/feishu/status
+```
+
+`POST /integrations/feishu/events` 会自动处理 URL verification challenge，并把 `im.message.receive_v1` 文本事件转换为 Agent 任务。普通消息默认创建 `manager_task`；显式前缀如 `/worker Alex ...`、`@Sophia ...` 会创建指定 Worker 任务。完整配置见 [docs/feishu_integration.md](docs/feishu_integration.md)。
+
 ## 安全边界
 
-- ✅ task type 白名单校验（仅接受 3 种类型）
+- ✅ task type 白名单校验（仅接受 4 种类型）
 - ✅ worker_name 必须在 workers.json 中存在
 - ✅ description 不能为空
 - ✅ 接口不直接执行任意 shell 命令

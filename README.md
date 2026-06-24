@@ -18,7 +18,7 @@
 ### 现在这个项目已经能做什么
 
 - 在 Electron 桌面端选择本地工作区，创建异步 Agent 任务
-- 支持 `worker_task`、`verified_task`、`project_pipeline_task`
+- 支持 `manager_task`、`worker_task`、`verified_task`、`project_pipeline_task`
 - 实时查看任务状态、日志、结果摘要和完整详情
 - 通过 WebSocket 推送任务更新，而不是只能靠轮询
 - 桌面端启动时校验后端 `project_dir`，避免误连到别的旧服务
@@ -56,6 +56,7 @@
 | **可观测性** | 状态、进度、日志、结果预览、详情、取消任务、WebSocket 推送 |
 | **启动稳定性** | Electron 校验后端身份、探活、异常恢复、旧任务回收 |
 | **业务接入 demo** | `database_query`、`internal_api_request`、`git_inspect`、`feishu_send_message` |
+| **飞书双向桥接** | 飞书开放平台事件订阅，群消息创建 Agent 任务，任务结束后回填原群聊 |
 | **工程质量** | 模块化 `runtime/`、无 runtime -> manager 反向依赖、自动化测试覆盖 |
 
 ### 已验证的真实任务流
@@ -85,6 +86,14 @@ flowchart LR
 ```
 
 桌面端和外部客户端共用同一套任务 API。真正的 Agent runtime、工具权限、密钥、日志和业务 connector 都放在后端边界之后，避免把关键能力写死在 prompt 里。
+
+### 给接入方 / Agent 的速查
+
+- 想通过 HTTP 创建任务：从 [agent_api.md](agent_api.md) 的 `POST /agent/tasks` 开始。
+- 不确定该派给谁：用 `manager_task`，只传 `description`，由 Manager 决策是否分派 Worker。
+- 明确要指定成员：用 `worker_task`，同时传 `worker_name`，例如 `Alex`、`Sophia`、`Elena`。
+- 要接飞书双向群聊：看 [docs/feishu_integration.md](docs/feishu_integration.md)，事件订阅 URL 是 `/integrations/feishu/events`。
+- 要接数据库、内部 API 或通知工具：看 [docs/business_connectors.md](docs/business_connectors.md)，不要让 Agent 直接拼任意 SQL 或 URL。
 
 ### 快速开始
 
@@ -117,6 +126,13 @@ OPENAI_API_KEY=
 OPENAI_BASE_URL=
 FEISHU_WEBHOOK_URL=
 FEISHU_WEBHOOK_SECRET=
+FEISHU_EVENT_VERIFICATION_TOKEN=
+FEISHU_EVENT_ENCRYPT_KEY=
+FEISHU_APP_ID=
+FEISHU_APP_SECRET=
+FEISHU_DEFAULT_TASK_TYPE=manager_task
+FEISHU_DEFAULT_WORKER=Elena
+FEISHU_API_BASE_URL=https://open.feishu.cn/open-apis
 INTERNAL_API_BASE_URL=
 INTERNAL_API_TOKEN=
 ```
@@ -286,7 +302,7 @@ It turns a prompt-driven agent demo into an observable, async task system. You c
 ### What Is Already Working
 
 - Select a local workspace in the Electron desktop app and create async agent tasks
-- Support `worker_task`, `verified_task`, and `project_pipeline_task`
+- Support `manager_task`, `worker_task`, `verified_task`, and `project_pipeline_task`
 - Inspect live task status, logs, result previews, and full task details
 - Push task updates over WebSocket instead of relying only on polling
 - Verify backend identity through `/health` `project_dir` to avoid attaching to the wrong old service
@@ -324,6 +340,7 @@ local repository / business demo
 | **Observability** | Status, progress, logs, result preview, full detail, cancellation, WebSocket updates |
 | **Startup stability** | Backend identity check, health monitoring, recovery, stale task cleanup |
 | **Business connector demo** | `database_query`, `internal_api_request`, `git_inspect`, `feishu_send_message` |
+| **Feishu/Lark app bridge** | Open Platform event subscriptions turn group messages into Agent tasks and reply to the source chat |
 | **Engineering quality** | Modular `runtime/`, no runtime-to-manager reverse dependency, automated tests |
 
 ### Verified End-To-End Flow
@@ -353,6 +370,14 @@ flowchart LR
 ```
 
 The desktop app and external clients share the same task API. The real runtime, tools, permissions, secrets, logs, and business connectors stay behind the backend boundary instead of being hardcoded into prompts.
+
+### Quick Map For Integrators / Agents
+
+- To create tasks over HTTP, start with `POST /agent/tasks` in [agent_api.md](agent_api.md).
+- If you do not know which worker to pick, use `manager_task` with only `description`; the Manager decides whether to delegate.
+- If you need one specific worker, use `worker_task` with `worker_name`, such as `Alex`, `Sophia`, or `Elena`.
+- For bidirectional Feishu/Lark group chat, use [docs/feishu_integration.md](docs/feishu_integration.md); the event subscription URL is `/integrations/feishu/events`.
+- For databases, internal APIs, or notification tools, use [docs/business_connectors.md](docs/business_connectors.md); do not let agents build arbitrary SQL or URLs.
 
 ### Quick Start
 
@@ -385,6 +410,13 @@ OPENAI_API_KEY=
 OPENAI_BASE_URL=
 FEISHU_WEBHOOK_URL=
 FEISHU_WEBHOOK_SECRET=
+FEISHU_EVENT_VERIFICATION_TOKEN=
+FEISHU_EVENT_ENCRYPT_KEY=
+FEISHU_APP_ID=
+FEISHU_APP_SECRET=
+FEISHU_DEFAULT_TASK_TYPE=manager_task
+FEISHU_DEFAULT_WORKER=Elena
+FEISHU_API_BASE_URL=https://open.feishu.cn/open-apis
 INTERNAL_API_BASE_URL=
 INTERNAL_API_TOKEN=
 ```
